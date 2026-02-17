@@ -1,0 +1,27 @@
+# SQL Audit
+
+## Build artifacts
+target/
+build/
+*.class
+*.jar
+*.war
+
+## IDE
+.idea/
+*.iml
+.vscode/
+.project
+.classpath
+.settings/
+
+## Node
+node_modules/
+dist/
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Logs
+*.log

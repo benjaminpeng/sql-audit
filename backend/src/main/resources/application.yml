@@ -1,0 +1,22 @@
+server:
+  port: 8080
+
+spring:
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+# 扫描配置
+sql-audit:
+  # 支持的文件扩展名
+  supported-extensions:
+    - .xml
+  # 默认排除的目录
+  excluded-dirs:
+    - .git
+    - .idea
+    - target
+    - build
+    - node_modules
+    - .mvn

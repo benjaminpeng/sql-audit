@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.example.mapper.UserMapper">
+
+    <!-- 公共列片段 -->
+    <sql id="Base_Column_List">
+        id, username, email, phone, status, create_time
+    </sql>
+
+    <!-- ✅ OG_3_4_1: SELECT * 禁止 -->
+    <select id="findAll" resultType="User">
+        SELECT * FROM t_user
+    </select>
+
+    <!-- ✅ OG_3_3_1: = NULL 判断 -->
+    <select id="findByStatus" resultType="User">
+        SELECT id, username FROM t_user
+        WHERE status = null
+    </select>
+
+    <!-- ✅ OG_3_3_5: LIKE 前缀 % -->
+    <select id="searchByName" resultType="User">
+        SELECT id, username FROM t_user
+        WHERE username LIKE '%test%'
+    </select>
+
+    <!-- ✅ OG_3_4_4: UNION 代替 UNION ALL -->
+    <select id="findAllUsers" resultType="User">
+        SELECT id, username FROM t_user WHERE status = 1
+        UNION
+        SELECT id, username FROM t_user WHERE status = 2
+    </select>
+
+    <!-- ✅ OG_3_8_3: 隐式 JOIN -->
+    <select id="findUserOrders" resultType="Map">
+        SELECT u.username, o.order_no
+        FROM t_user u, t_order o
+        WHERE u.id = o.user_id
+    </select>
+
+    <!-- ✅ OG_3_6_3: UPDATE 没有 WHERE -->
+    <update id="updateAll">
+        UPDATE t_user SET status = 0
+    </update>
+
+    <!-- ✅ OG_3_7_3 + OG_3_7_2: DELETE 没有 WHERE -->
+    <delete id="deleteAll">
+        DELETE FROM t_user
+    </delete>
+
+    <!-- ✅ OG_MYBATIS_INJECTION: ${} 注入风险 -->
+    <select id="findByCondition" resultType="User">
+        SELECT id, username, email FROM t_user
+        WHERE ${column} = #{value}
+    </select>
+
+    <!-- ✅ OG_3_3_4: 负向操作符 NOT IN -->
+    <select id="findActiveUsers" resultType="User">
+        SELECT id, username FROM t_user
+        WHERE status NOT IN (3, 4, 5)
+    </select>
+
+    <!-- ✅ OG_3_4_5: count() 使用 -->
+    <select id="countUsers" resultType="int">
+        SELECT count(*) FROM t_user WHERE status = 1
+    </select>
+
+    <!-- ✅ 正常语句（不触发违规） -->
+    <select id="findById" resultType="User">
+        SELECT id, username, email FROM t_user
+        WHERE id = #{id} LIMIT 1
+    </select>
+
+    <update id="updateStatus">
+        UPDATE t_user SET status = #{status}
+        WHERE id = #{id}
+    </update>
+
+</mapper>
