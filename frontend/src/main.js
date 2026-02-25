@@ -63,7 +63,9 @@ let state = {
     scanReport: null,
     scanning: false,
     filter: 'ALL',
-    rulesExpanded: false
+    rulesExpanded: false,
+    currentPage: 1,
+    itemsPerPage: 50
 };
 
 // ============================================
@@ -315,6 +317,16 @@ function renderResults() {
                     </div>
                 </div>
 
+                ${report.limitReached ? `
+                <div style="background: rgba(255, 171, 0, 0.1); border: 1px solid rgba(255, 171, 0, 0.3); color: #b77900; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 18px;">⚠️</span>
+                    <div>
+                        <strong>扫描结果被截断</strong><br/>
+                        检测到极多违规项，为保证系统性能，仅为您展示前 1000 条。建议缩小扫描范围或优化当前规则集。
+                    </div>
+                </div>
+                ` : ''}
+
                 <!-- Stats -->
                 <div class="stats-grid">
                     <div class="stat-item">
@@ -359,7 +371,30 @@ function renderPassResult(report) {
     `;
 }
 
+window.loadMoreViolations = function () {
+    state.currentPage++;
+    render();
+};
+
 function renderViolations(grouped, report) {
+    // 拍平以实现分页
+    const flattened = [];
+    for (const [path, violations] of Object.entries(grouped)) {
+        violations.forEach(v => flattened.push({ path, v }));
+    }
+
+    const totalFiltered = flattened.length;
+    const limit = state.currentPage * state.itemsPerPage;
+    const paginated = flattened.slice(0, limit);
+    const hasMore = limit < totalFiltered;
+
+    // 重新分组
+    const paginatedGrouped = {};
+    paginated.forEach(item => {
+        if (!paginatedGrouped[item.path]) paginatedGrouped[item.path] = [];
+        paginatedGrouped[item.path].push(item.v);
+    });
+
     return `
         <!-- Filters -->
         <div class="filter-bar">
@@ -380,7 +415,7 @@ function renderViolations(grouped, report) {
         </div>
 
         <!-- Violations by file -->
-        ${Object.entries(grouped).map(([path, violations]) => `
+        ${Object.entries(paginatedGrouped).map(([path, violations]) => `
             <div class="violation-group">
                 <div class="violation-file-header">
                     <span>📄</span>
@@ -390,6 +425,14 @@ function renderViolations(grouped, report) {
                 ${violations.map(v => renderViolationItem(v)).join('')}
             </div>
         `).join('')}
+
+        ${hasMore ? `
+            <div style="text-align: center; margin: 20px 0;">
+                <button class="btn btn-secondary" onclick="loadMoreViolations()">
+                    展示更多 (已展示 ${limit} / ${totalFiltered})
+                </button>
+            </div>
+        ` : ''}
     `;
 }
 
@@ -560,6 +603,10 @@ async function handleScan() {
 }
 
 async function handleFileUpload(file) {
+    if (file.size > 10 * 1024 * 1024) {
+        showToast('文件大小不能超过 10MB', 'error');
+        return;
+    }
     if (!file.name.toLowerCase().endsWith('.docx')) {
         showToast('请上传 .docx 格式的 Word 文档', 'error');
         return;
@@ -586,11 +633,16 @@ async function handleClearCustomRules() {
 
 function handleClearResults() {
     state.scanReport = null;
+    state.currentPage = 1;
     render();
     showToast('扫描结果已清除');
 }
 
 async function handleSqlFileScan(file) {
+    if (file.size > 10 * 1024 * 1024) {
+        showToast('文件大小不能超过 10MB', 'error');
+        return;
+    }
     if (!file.name.toLowerCase().endsWith('.sql')) {
         showToast('请上传 .sql 格式的 SQL 脚本文件', 'error');
         return;
@@ -599,6 +651,7 @@ async function handleSqlFileScan(file) {
     state.scanning = true;
     state.scanReport = null;
     state.filter = 'ALL';
+    state.currentPage = 1;
     render();
 
     try {

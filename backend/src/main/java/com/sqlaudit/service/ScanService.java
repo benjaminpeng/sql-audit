@@ -37,6 +37,8 @@ public class ScanService {
         this.ruleService = ruleService;
     }
 
+    private static final int MAX_VIOLATIONS = 1000;
+
     /**
      * 扫描指定路径下的 Java 项目
      */
@@ -65,11 +67,24 @@ public class ScanService {
 
         // 3. 执行规则检查
         List<Violation> allViolations = new ArrayList<>();
+        boolean limitReached = false;
         for (SqlFragment fragment : allFragments) {
+            if (limitReached)
+                break;
             List<Violation> violations = ruleService.checkSql(fragment);
-            allViolations.addAll(violations);
+            for (Violation v : violations) {
+                if (allViolations.size() >= MAX_VIOLATIONS) {
+                    limitReached = true;
+                    break;
+                }
+                allViolations.add(v);
+            }
         }
-        log.info("发现 {} 条违规", allViolations.size());
+        if (limitReached) {
+            log.warn("违规数量达到上限 {}，停止进一步扫描", MAX_VIOLATIONS);
+        } else {
+            log.info("发现 {} 条违规", allViolations.size());
+        }
 
         // 4. 构建报告
         long errorCount = allViolations.stream()
@@ -94,6 +109,7 @@ public class ScanService {
                 .infoCount((int) infoCount)
                 .violations(allViolations)
                 .scannedFiles(scannedFiles)
+                .limitReached(limitReached)
                 .build();
     }
 
@@ -113,11 +129,24 @@ public class ScanService {
 
         // 2. 执行规则检查
         List<Violation> allViolations = new ArrayList<>();
+        boolean limitReached = false;
         for (SqlFragment fragment : fragments) {
+            if (limitReached)
+                break;
             List<Violation> violations = ruleService.checkSql(fragment);
-            allViolations.addAll(violations);
+            for (Violation v : violations) {
+                if (allViolations.size() >= MAX_VIOLATIONS) {
+                    limitReached = true;
+                    break;
+                }
+                allViolations.add(v);
+            }
         }
-        log.info("发现 {} 条违规", allViolations.size());
+        if (limitReached) {
+            log.warn("SQL脚本违规数量达到上限 {}，停止进一步扫描", MAX_VIOLATIONS);
+        } else {
+            log.info("发现 {} 条违规", allViolations.size());
+        }
 
         // 3. 构建报告
         long errorCount = allViolations.stream()
@@ -138,6 +167,7 @@ public class ScanService {
                 .infoCount((int) infoCount)
                 .violations(allViolations)
                 .scannedFiles(List.of(fileName))
+                .limitReached(limitReached)
                 .build();
     }
 

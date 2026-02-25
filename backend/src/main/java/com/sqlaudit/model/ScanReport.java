@@ -46,4 +46,7 @@ public class ScanReport {
 
     /** 扫描的文件列表 */
     private List<String> scannedFiles;
+
+    /** 是否因为违规过多达上限而截断 */
+    private boolean limitReached;
 }
