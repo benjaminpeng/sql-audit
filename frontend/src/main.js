@@ -436,7 +436,10 @@ function bindEvents() {
     // Word file upload
     const uploadZone = document.getElementById('uploadZone');
     const fileInput = document.getElementById('ruleFileInput');
-    if (uploadZone) {
+    if (uploadZone && fileInput) {
+        uploadZone.addEventListener('click', (e) => {
+            if (e.target !== fileInput) fileInput.click();
+        });
         uploadZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadZone.classList.add('dragover');
@@ -450,8 +453,6 @@ function bindEvents() {
             const file = e.dataTransfer.files[0];
             if (file) handleFileUpload(file);
         });
-    }
-    if (fileInput) {
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) handleFileUpload(file);
@@ -505,7 +506,10 @@ function bindEvents() {
     // SQL file upload
     const sqlUploadZone = document.getElementById('sqlUploadZone');
     const sqlFileInput = document.getElementById('sqlFileInput');
-    if (sqlUploadZone) {
+    if (sqlUploadZone && sqlFileInput) {
+        sqlUploadZone.addEventListener('click', (e) => {
+            if (e.target !== sqlFileInput) sqlFileInput.click();
+        });
         sqlUploadZone.addEventListener('dragover', (e) => {
             e.preventDefault();
             sqlUploadZone.classList.add('dragover');
@@ -519,8 +523,6 @@ function bindEvents() {
             const file = e.dataTransfer.files[0];
             if (file) handleSqlFileScan(file);
         });
-    }
-    if (sqlFileInput) {
         sqlFileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
             if (file) handleSqlFileScan(file);

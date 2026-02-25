@@ -28,18 +28,19 @@ public class SubqueryInTargetChecker implements SqlChecker {
         // 简单分割 FROM，取第一部分作为目标列区域
         // 注意：这种分割对于嵌套子查询可能不准确，但作为静态扫描足够覆盖大多数情况
         String[] parts = FROM_PATTERN.split(sql, 2);
-        
+
         if (parts.length > 1) {
-            String targetList = parts[0];
+            String targetList = parts[0].trim();
             // 检查目标列中是否有 SELECT
             // 排除 SELECT 开头的那个（即主 SELECT）
-            String innerContent = targetList.trim().substring(6); // 去掉 "SELECT"
-            
+            if (targetList.length() <= 6)
+                return CheckResult.pass();
+            String innerContent = targetList.substring(6); // 去掉 "SELECT"
+
             if (innerContent.toLowerCase().contains("select")) {
-                 return CheckResult.warn(
+                return CheckResult.warn(
                         "SELECT 目标列中包含子查询，可能导致无法下推影响执行性能",
-                        "SELECT ... (subquery) ..."
-                );
+                        "SELECT ... (subquery) ...");
             }
         }
         return CheckResult.pass();

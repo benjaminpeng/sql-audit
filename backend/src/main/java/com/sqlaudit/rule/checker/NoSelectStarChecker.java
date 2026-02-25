@@ -13,9 +13,8 @@ import java.util.regex.Pattern;
 public class NoSelectStarChecker implements SqlChecker {
 
     private static final Pattern SELECT_STAR = Pattern.compile(
-            "\\bSELECT\\s+\\*\\s+FROM\\b",
-            Pattern.CASE_INSENSITIVE
-    );
+            "\\bSELECT\\s+(DISTINCT\\s+)?\\*\\s*(,|\\s+FROM)\\b",
+            Pattern.CASE_INSENSITIVE);
 
     @Override
     public String name() {
@@ -31,8 +30,7 @@ public class NoSelectStarChecker implements SqlChecker {
         if (matcher.find()) {
             return CheckResult.fail(
                     "禁止使用 SELECT *，请明确指定需要查询的列",
-                    matcher.group()
-            );
+                    matcher.group());
         }
         return CheckResult.pass();
     }
