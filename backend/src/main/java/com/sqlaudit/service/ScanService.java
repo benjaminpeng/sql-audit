@@ -5,6 +5,7 @@ import com.sqlaudit.model.SqlFragment;
 import com.sqlaudit.model.Violation;
 import com.sqlaudit.model.AuditRule.Severity;
 import com.sqlaudit.parser.MyBatisMapperParser;
+import com.sqlaudit.parser.SqlScriptParser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -24,14 +25,15 @@ public class ScanService {
 
     private static final Set<String> EXCLUDED_DIRS = Set.of(
             ".git", ".idea", ".vscode", "target", "build",
-            "node_modules", ".mvn", "bin", "out", ".gradle"
-    );
+            "node_modules", ".mvn", "bin", "out", ".gradle");
 
     private final MyBatisMapperParser mapperParser;
+    private final SqlScriptParser sqlScriptParser;
     private final RuleService ruleService;
 
-    public ScanService(MyBatisMapperParser mapperParser, RuleService ruleService) {
+    public ScanService(MyBatisMapperParser mapperParser, SqlScriptParser sqlScriptParser, RuleService ruleService) {
         this.mapperParser = mapperParser;
+        this.sqlScriptParser = sqlScriptParser;
         this.ruleService = ruleService;
     }
 
@@ -96,11 +98,56 @@ public class ScanService {
     }
 
     /**
+     * 审查上传的 SQL 脚本内容
+     *
+     * @param sqlContent SQL 脚本文本
+     * @param fileName   文件名
+     * @return 扫描报告
+     */
+    public ScanReport scanSqlContent(String sqlContent, String fileName) {
+        log.info("开始审查 SQL 脚本: {}", fileName);
+
+        // 1. 解析 SQL 语句
+        List<SqlFragment> fragments = sqlScriptParser.parse(sqlContent, fileName);
+        log.info("从 {} 中提取了 {} 条 SQL 语句", fileName, fragments.size());
+
+        // 2. 执行规则检查
+        List<Violation> allViolations = new ArrayList<>();
+        for (SqlFragment fragment : fragments) {
+            List<Violation> violations = ruleService.checkSql(fragment);
+            allViolations.addAll(violations);
+        }
+        log.info("发现 {} 条违规", allViolations.size());
+
+        // 3. 构建报告
+        long errorCount = allViolations.stream()
+                .filter(v -> v.getRule().getSeverity() == Severity.ERROR).count();
+        long warningCount = allViolations.stream()
+                .filter(v -> v.getRule().getSeverity() == Severity.WARNING).count();
+        long infoCount = allViolations.stream()
+                .filter(v -> v.getRule().getSeverity() == Severity.INFO).count();
+
+        return ScanReport.builder()
+                .repoPath(fileName)
+                .scanTime(LocalDateTime.now())
+                .totalFiles(1)
+                .totalStatements(fragments.size())
+                .totalViolations(allViolations.size())
+                .errorCount((int) errorCount)
+                .warningCount((int) warningCount)
+                .infoCount((int) infoCount)
+                .violations(allViolations)
+                .scannedFiles(List.of(fileName))
+                .build();
+    }
+
+    /**
      * 递归查找 MyBatis Mapper XML 文件
      */
     private void findMapperFiles(File dir, List<File> result) {
         File[] files = dir.listFiles();
-        if (files == null) return;
+        if (files == null)
+            return;
 
         for (File file : files) {
             if (file.isDirectory()) {

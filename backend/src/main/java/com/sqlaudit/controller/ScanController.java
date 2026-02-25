@@ -55,6 +55,32 @@ public class ScanController {
     }
 
     /**
+     * 上传 SQL 脚本文件进行审查
+     */
+    @PostMapping("/scan/sql")
+    public ResponseEntity<?> scanSql(@RequestParam("file") MultipartFile file) {
+        if (file.isEmpty()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "请上传文件"));
+        }
+
+        String filename = file.getOriginalFilename();
+        if (filename == null || !filename.toLowerCase().endsWith(".sql")) {
+            return ResponseEntity.badRequest().body(Map.of("error", "请上传 .sql 格式的 SQL 脚本文件"));
+        }
+
+        try {
+            String sqlContent = new String(file.getBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            log.info("收到 SQL 脚本审查请求: {}, 大小: {} bytes", filename, sqlContent.length());
+            ScanReport report = scanService.scanSqlContent(sqlContent, filename);
+            return ResponseEntity.ok(report);
+        } catch (Exception e) {
+            log.error("SQL 脚本审查失败", e);
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("error", "审查过程中出错: " + e.getMessage()));
+        }
+    }
+
+    /**
      * 上传 Word 文档审查规范
      */
     @PostMapping("/rules/upload")
@@ -72,8 +98,7 @@ public class ScanController {
             List<AuditRule> rules = ruleService.loadRulesFromWord(file.getInputStream());
             return ResponseEntity.ok(Map.of(
                     "message", "成功加载 " + rules.size() + " 条审查规则",
-                    "rules", rules
-            ));
+                    "rules", rules));
         } catch (Exception e) {
             log.error("上传规则文件失败", e);
             return ResponseEntity.badRequest()

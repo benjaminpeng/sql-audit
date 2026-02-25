@@ -13,8 +13,9 @@ import java.util.*;
 import java.util.regex.Pattern;
 
 /**
- * MyBatis XML Mapper 解析器
- * 从 XML 文件中提取 select/insert/update/delete SQL 语句
+ * MyBatis XML Mapper Parser.
+ * Extracts select/insert/update/delete SQL statements from XML files.
+ * Refactored for Clean Code and Java 21.
  */
 @Component
 public class MyBatisMapperParser {
@@ -23,19 +24,18 @@ public class MyBatisMapperParser {
 
     private static final Set<String> SQL_TAGS = Set.of("select", "insert", "update", "delete");
     private static final Pattern MYBATIS_PARAM_PATTERN = Pattern.compile("#\\{[^}]*}");
-    private static final Pattern MYBATIS_DOLLAR_PATTERN = Pattern.compile("\\$\\{[^}]*}");
     private static final Pattern DYNAMIC_TAG_PATTERN = Pattern.compile("<(?:if|choose|when|otherwise|where|set|trim|foreach|bind)[^>]*>|</(?:if|choose|when|otherwise|where|set|trim|foreach|bind)>");
     private static final Pattern INCLUDE_TAG_PATTERN = Pattern.compile("<include\\s+refid=\"[^\"]*\"\\s*/?>|</include>");
     private static final Pattern MULTI_SPACE_PATTERN = Pattern.compile("\\s+");
 
     /**
-     * 判断一个 XML 文件是否是 MyBatis Mapper 文件
+     * Checks if a file is a valid MyBatis Mapper XML.
      */
     public boolean isMyBatisMapper(File file) {
         if (!file.getName().endsWith(".xml")) {
             return false;
         }
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+        try (var reader = new BufferedReader(new FileReader(file))) {
             String line;
             int lineCount = 0;
             while ((line = reader.readLine()) != null && lineCount < 10) {
@@ -45,51 +45,49 @@ public class MyBatisMapperParser {
                 lineCount++;
             }
         } catch (IOException e) {
-            log.warn("无法读取文件: {}", file.getAbsolutePath(), e);
+            log.warn("Unable to read file: {}", file.getAbsolutePath(), e);
         }
         return false;
     }
 
     /**
-     * 解析一个 MyBatis Mapper XML 文件，提取所有 SQL 片段
+     * Parses a MyBatis Mapper XML file and extracts SQL fragments.
      */
     public List<SqlFragment> parse(File file, Path repoRoot) {
-        List<SqlFragment> fragments = new ArrayList<>();
+        var fragments = new ArrayList<SqlFragment>();
         try {
-            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-            // 禁用外部实体（安全）
+            var factory = DocumentBuilderFactory.newInstance();
+            // Disable external entities for security (XXE prevention)
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", false);
             factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
             factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
             factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
 
-            DocumentBuilder builder = factory.newDocumentBuilder();
-            Document document = builder.parse(file);
+            var builder = factory.newDocumentBuilder();
+            var document = builder.parse(file);
             document.getDocumentElement().normalize();
 
-            Element root = document.getDocumentElement();
+            var root = document.getDocumentElement();
             if (!"mapper".equals(root.getTagName())) {
                 return fragments;
             }
 
             String namespace = root.getAttribute("namespace");
 
-            // 先收集 <sql> 片段用于 include 引用
-            Map<String, String> sqlFragmentMap = collectSqlFragments(root);
+            // Collect <sql> fragments for <include> resolution
+            var sqlFragmentMap = collectSqlFragments(root);
 
-            // 提取 SQL 语句
+            // Extract SQL statements
             for (String tag : SQL_TAGS) {
-                NodeList nodes = root.getElementsByTagName(tag);
+                var nodes = root.getElementsByTagName(tag);
                 for (int i = 0; i < nodes.getLength(); i++) {
-                    Element element = (Element) nodes.item(i);
+                    var element = (Element) nodes.item(i);
                     String id = element.getAttribute("id");
                     String rawSql = extractSqlText(element, sqlFragmentMap);
                     String cleanedSql = cleanSql(rawSql);
 
                     if (!cleanedSql.isBlank()) {
-                        // 计算行号
                         int lineNumber = estimateLineNumber(file, id);
-
                         fragments.add(SqlFragment.builder()
                                 .filePath(file.getAbsolutePath())
                                 .relativePath(repoRoot.relativize(file.toPath()).toString())
@@ -103,45 +101,50 @@ public class MyBatisMapperParser {
                 }
             }
         } catch (Exception e) {
-            log.error("解析 MyBatis XML 文件失败: {}", file.getAbsolutePath(), e);
+            log.error("Failed to parse MyBatis XML: {}", file.getAbsolutePath(), e);
         }
         return fragments;
     }
 
     /**
-     * 收集 <sql> 片段
+     * Collects reusable <sql> fragments.
      */
     private Map<String, String> collectSqlFragments(Element root) {
-        Map<String, String> fragments = new HashMap<>();
-        NodeList sqlNodes = root.getElementsByTagName("sql");
+        var fragments = new HashMap<String, String>();
+        var sqlNodes = root.getElementsByTagName("sql");
         for (int i = 0; i < sqlNodes.getLength(); i++) {
-            Element sqlElement = (Element) sqlNodes.item(i);
-            String id = sqlElement.getAttribute("id");
-            String content = sqlElement.getTextContent();
-            fragments.put(id, content);
+            var sqlElement = (Element) sqlNodes.item(i);
+            fragments.put(sqlElement.getAttribute("id"), sqlElement.getTextContent());
         }
         return fragments;
     }
 
     /**
-     * 提取元素中的 SQL 文本（递归处理子元素）
+     * Recursively extracts SQL text from an element.
      */
     private String extractSqlText(Element element, Map<String, String> sqlFragmentMap) {
-        StringBuilder sb = new StringBuilder();
-        NodeList children = element.getChildNodes();
+        var sb = new StringBuilder();
+        var children = element.getChildNodes();
+        
         for (int i = 0; i < children.getLength(); i++) {
-            Node child = children.item(i);
-            if (child.getNodeType() == Node.TEXT_NODE || child.getNodeType() == Node.CDATA_SECTION_NODE) {
-                sb.append(child.getTextContent());
-            } else if (child.getNodeType() == Node.ELEMENT_NODE) {
-                Element childElement = (Element) child;
-                if ("include".equals(childElement.getTagName())) {
-                    String refId = childElement.getAttribute("refid");
-                    String fragment = sqlFragmentMap.getOrDefault(refId, "");
-                    sb.append(" ").append(fragment).append(" ");
-                } else {
-                    // 动态标签（if, where, foreach 等），递归提取内容
-                    sb.append(" ").append(extractSqlText(childElement, sqlFragmentMap)).append(" ");
+            var child = children.item(i);
+            
+            // Use switch pattern matching on node type (if available) or standard switch
+            Short nodeType = child.getNodeType();
+            
+            switch (nodeType) {
+                case Node.TEXT_NODE, Node.CDATA_SECTION_NODE -> 
+                    sb.append(child.getTextContent());
+                
+                case Node.ELEMENT_NODE -> {
+                    var childElement = (Element) child;
+                    if ("include".equals(childElement.getTagName())) {
+                        String refId = childElement.getAttribute("refid");
+                        sb.append(" ").append(sqlFragmentMap.getOrDefault(refId, "")).append(" ");
+                    } else {
+                        // Recursively handle dynamic tags (if, where, trim, etc.)
+                        sb.append(" ").append(extractSqlText(childElement, sqlFragmentMap)).append(" ");
+                    }
                 }
             }
         }
@@ -149,39 +152,52 @@ public class MyBatisMapperParser {
     }
 
     /**
-     * 清理 SQL 文本
-     * - 去除 SQL 注释
-     * - 替换 #{param} 为占位符
-     * - 保留 ${param} 用于注入检查
-     * - 处理 XML 转义符
-     * - 去除多余空白
+     * Cleans and normalizes SQL text.
      */
     private String cleanSql(String rawSql) {
-        String sql = rawSql;
-        // 去除 SQL 单行注释
-        sql = sql.replaceAll("--.*", " ");
-        // 去除 SQL 块注释
-        sql = sql.replaceAll("/\\*.*?\\*/", " ");
-        // 替换 #{} 参数占位符为 ?
-        sql = MYBATIS_PARAM_PATTERN.matcher(sql).replaceAll("?");
-        // 去除残留的动态 XML 标签（理论上已被递归处理，这里做兜底）
-        sql = DYNAMIC_TAG_PATTERN.matcher(sql).replaceAll(" ");
-        sql = INCLUDE_TAG_PATTERN.matcher(sql).replaceAll(" ");
-        // XML 转义符处理
-        sql = sql.replace("&gt;", ">").replace("&lt;", "<").replace("&amp;", "&");
-        // 规范化空白
-        sql = MULTI_SPACE_PATTERN.matcher(sql).replaceAll(" ").trim();
-        return sql;
+        var sql = removeComments(rawSql);
+        sql = replacePlaceholders(sql);
+        sql = removeDynamicTags(sql);
+        sql = unescapeXml(sql);
+        return normalizeWhitespace(sql);
+    }
+
+    private String removeComments(String sql) {
+        // Remove single-line comments
+        var noLineComments = sql.replaceAll("--.*", " ");
+        // Remove block comments (using (?s) for DOTALL mode to match newlines)
+        return noLineComments.replaceAll("(?s)/\\*.*?\\*/", " ");
+    }
+
+    private String replacePlaceholders(String sql) {
+        // Replace #{param} with ?
+        return MYBATIS_PARAM_PATTERN.matcher(sql).replaceAll("?");
+    }
+
+    private String removeDynamicTags(String sql) {
+        // Clean leftover dynamic tags and include tags
+        var cleaned = DYNAMIC_TAG_PATTERN.matcher(sql).replaceAll(" ");
+        return INCLUDE_TAG_PATTERN.matcher(cleaned).replaceAll(" ");
+    }
+
+    private String unescapeXml(String sql) {
+        return sql.replace("&gt;", ">")
+                  .replace("&lt;", "<")
+                  .replace("&amp;", "&");
+    }
+
+    private String normalizeWhitespace(String sql) {
+        return MULTI_SPACE_PATTERN.matcher(sql).replaceAll(" ").trim();
     }
 
     /**
-     * 估算 SQL 语句在文件中的行号（通过搜索 id 属性）
+     * Estimates line number by searching for the statement ID in the file.
      */
     private int estimateLineNumber(File file, String statementId) {
         if (statementId == null || statementId.isEmpty()) {
             return 1;
         }
-        try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+        try (var reader = new BufferedReader(new FileReader(file))) {
             String line;
             int lineNum = 0;
             while ((line = reader.readLine()) != null) {
@@ -191,7 +207,7 @@ public class MyBatisMapperParser {
                 }
             }
         } catch (IOException e) {
-            log.warn("无法读取文件行号: {}", file.getAbsolutePath());
+            log.warn("Unable to determine line number for: {}", file.getAbsolutePath());
         }
         return 1;
     }

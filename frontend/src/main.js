@@ -40,6 +40,18 @@ const api = {
     async clearCustomRules() {
         const res = await fetch('/api/rules/custom', { method: 'DELETE' });
         return res.json();
+    },
+
+    async scanSql(file) {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch('/api/scan/sql', {
+            method: 'POST',
+            body: formData
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'SQL 脚本审查失败');
+        return data;
     }
 };
 
@@ -50,7 +62,8 @@ let state = {
     rules: [],
     scanReport: null,
     scanning: false,
-    filter: 'ALL' // ALL, ERROR, WARNING, INFO
+    filter: 'ALL',
+    rulesExpanded: false
 };
 
 // ============================================
@@ -76,15 +89,22 @@ function showToast(message, type = 'success') {
 }
 
 // ============================================
-// Render
+// Render — New Layout
 // ============================================
 function render() {
     const app = document.getElementById('app');
     app.innerHTML = `
         ${renderHeader()}
-        <div class="grid-2">
-            ${renderRulesCard()}
-            ${renderScanCard()}
+        <div class="main-columns section-gap">
+            <div class="col-left">
+                <div class="workflow-label"><span class="workflow-step">1</span> 规则配置</div>
+                ${renderRulesConfig()}
+                ${renderRulesSection()}
+            </div>
+            <div class="col-right">
+                <div class="workflow-label"><span class="workflow-step">2</span> 代码审查</div>
+                ${renderScanSection()}
+            </div>
         </div>
         ${state.scanReport ? renderResults() : ''}
     `;
@@ -94,13 +114,117 @@ function render() {
 function renderHeader() {
     return `
         <header class="app-header">
-            <h1 class="app-logo">🛡️ SQL Audit</h1>
-            <p class="app-subtitle">OpenGauss SQL 开发规范审查 — 基于 MyBatis XML 的静态分析工具</p>
+            <h1 class="app-logo">⚡ Ultimate-SQL Audit</h1>
+            <p class="app-subtitle">OpenGauss SQL 合规审查 · MyBatis XML 扫描 & SQL 脚本上传</p>
         </header>
     `;
 }
 
-function renderRulesCard() {
+function renderRulesConfig() {
+    return `
+            <div class="rules-config-card glass">
+                <div class="rules-config-inner">
+                    <div class="rules-config-left">
+                        <span class="card-icon">📄</span>
+                        <div>
+                            <div class="card-label">自定义规则</div>
+                            <div class="card-desc">上传 Word 规范文档定义自定义审查规则</div>
+                        </div>
+                    </div>
+                    <div class="rules-config-right">
+                        <div class="word-upload-area compact" id="uploadZone">
+                            <span class="upload-icon">📎</span>
+                            <div class="upload-info">
+                                <div class="text">拖拽 .docx 或点击上传</div>
+                            </div>
+                            <input type="file" id="ruleFileInput" accept=".docx" />
+                        </div>
+                    </div>
+                </div>
+                <div class="example-toggle" id="toggleFormatExample">💡 查看规范文档格式示例</div>
+                <div class="format-example hidden" id="formatExamplePanel">
+                    <div class="format-example-header">推荐格式：表格</div>
+                    <div class="format-example-table">
+                        <table>
+                            <thead><tr><th>编号</th><th>规则描述</th><th>等级</th></tr></thead>
+                            <tbody>
+                                <tr><td>R001</td><td>禁止使用 SELECT * 查询</td><td>错误</td></tr>
+                                <tr><td>R002</td><td>UPDATE/DELETE 必须包含 WHERE</td><td>错误</td></tr>
+                                <tr><td>R003</td><td>建议使用 UNION ALL 代替 UNION</td><td>警告</td></tr>
+                                <tr><td>R004</td><td>禁止使用 \${} 拼接，防止注入</td><td>错误</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="format-example-header" style="margin-top: var(--s-md);">段落/列表格式</div>
+                    <div class="format-example-text">
+                        <code>1. 禁止使用 SELECT * 查询所有字段</code><br/>
+                        <code>2. UPDATE 和 DELETE 语句必须包含 WHERE 子句</code><br/>
+                        <code>3. 建议使用 #{} 参数绑定，禁止 \${} 拼接</code><br/>
+                        <code>• 查询建议添加 LIMIT 限制</code>
+                    </div>
+                    <div class="format-example-header" style="margin-top: var(--s-md);">触发关键词</div>
+                    <div class="format-example-keywords">
+                        <span class="keyword-tag">禁止</span>
+                        <span class="keyword-tag">必须</span>
+                        <span class="keyword-tag">建议</span>
+                        <span class="keyword-tag">不允许</span>
+                        <span class="keyword-tag">不得</span>
+                        <span class="keyword-tag">SELECT</span>
+                        <span class="keyword-tag">WHERE</span>
+                        <span class="keyword-tag">索引</span>
+                        <span class="keyword-tag">注入</span>
+                    </div>
+                    <div class="format-example-header" style="margin-top: var(--s-md);">等级识别</div>
+                    <div class="format-example-keywords">
+                        <span class="keyword-tag severity-ERROR">错误 / ERROR</span>
+                        <span class="keyword-tag severity-WARNING">警告 / WARNING</span>
+                        <span class="keyword-tag severity-INFO">提示 / INFO</span>
+                    </div>
+                </div>
+            </div>
+    `;
+}
+
+function renderScanSection() {
+    return `
+            <div class="scan-methods">
+                <div class="scan-method-card glass">
+                    <div class="scan-method-header">
+                        <span class="card-icon">🔍</span>
+                        <div>
+                            <div class="card-label">MyBatis XML 扫描</div>
+                            <div class="card-desc">输入 Java 项目路径，扫描所有 MyBatis Mapper XML</div>
+                        </div>
+                    </div>
+                    <div class="scan-input-wrapper">
+                        <input type="text" class="scan-input" id="repoPath"
+                               placeholder="输入 Java 项目路径..."
+                               value="${state.lastRepoPath || ''}" />
+                        <button class="scan-btn" id="scanBtn" ${state.scanning ? 'disabled' : ''}>
+                            ${state.scanning
+            ? '<span class="loading-spinner"><span class="spinner"></span> 扫描中</span>'
+            : '🚀 扫描'}
+                        </button>
+                    </div>
+                </div>
+                <div class="scan-method-card glass">
+                    <div class="scan-method-header">
+                        <span class="card-icon">📝</span>
+                        <div>
+                            <div class="card-label">SQL 脚本审查</div>
+                            <div class="card-desc">上传 .sql 变更脚本直接进行合规检查</div>
+                        </div>
+                    </div>
+                    <div class="sql-drop-area" id="sqlUploadZone">
+                        <div class="drop-text">📎 拖拽 .sql 文件或点击上传</div>
+                        <input type="file" id="sqlFileInput" accept=".sql" />
+                    </div>
+                </div>
+            </div>
+    `;
+}
+
+function renderRulesSection() {
     const defaultRules = state.rules.filter(r => r.source === 'DEFAULT');
     const customRules = state.rules.filter(r => r.source === 'CUSTOM');
 
@@ -113,87 +237,45 @@ function renderRulesCard() {
     });
 
     return `
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title"><span class="icon">📋</span> OpenGauss 审查规则</h2>
-                <span class="card-badge">${state.rules.length} 条规则</span>
-            </div>
-
-            <!-- 上传区域 -->
-            <div class="upload-zone" id="uploadZone">
-                <span class="icon">📄</span>
-                <div class="upload-text">上传 Word 审查规范文档</div>
-                <div class="upload-hint">拖拽 .docx 文件到此处，或点击选择文件</div>
-                <input type="file" id="ruleFileInput" accept=".docx" />
+        <div class="rules-section glass section-gap">
+            <div class="section-header">
+                <span class="section-title">审查规则</span>
+                <span class="card-badge">${state.rules.length} 条</span>
             </div>
 
             ${customRules.length > 0 ? `
-                <div style="margin-top: var(--space-md); display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-size: 0.85rem; color: var(--text-secondary);">已加载 ${customRules.length} 条自定义规则</span>
-                    <button class="btn btn-danger btn-sm" id="clearCustomRules">清除自定义</button>
+                <div class="custom-rules-bar">
+                    <span>✨ 已加载 ${customRules.length} 条自定义规则</span>
+                    <button class="btn btn-sm btn-danger" id="clearCustomRules">清除</button>
                 </div>
             ` : ''}
 
-            <!-- 按分类分组的规则列表 -->
-            <div class="rules-grouped" style="margin-top: var(--space-md);">
-                ${Object.entries(categories).map(([cat, rules]) => `
-                    <div class="rule-category">
-                        <div class="rule-category-header">§ ${cat}</div>
-                        <ul class="rules-list">
-                            ${rules.map(rule => `
-                                <li class="rule-item">
-                                    <span class="rule-section">${rule.section || ''}</span>
-                                    <span class="rule-severity severity-${rule.severity}">${rule.severity}</span>
-                                    <span class="rule-name">${rule.name}</span>
-                                </li>
-                            `).join('')}
-                        </ul>
+            ${Object.entries(categories).map(([cat, rules]) => `
+                <div class="rules-category-group">
+                    <div class="rules-category-label">§ ${cat}</div>
+                    <div class="rules-chips">
+                        ${rules.map(rule => `
+                            <span class="rule-chip" title="${rule.description || rule.name}">
+                                <span class="dot dot-${rule.severity}"></span>
+                                ${rule.section ? `<span class="section-num">${rule.section}</span>` : ''}
+                                ${rule.name}
+                            </span>
+                        `).join('')}
                     </div>
-                `).join('')}
+                </div>
+            `).join('')}
 
-                ${customRules.length > 0 ? `
-                    <div class="rule-category">
-                        <div class="rule-category-header">📄 自定义规则</div>
-                        <ul class="rules-list">
-                            ${customRules.map(rule => `
-                                <li class="rule-item">
-                                    <span class="rule-severity severity-${rule.severity}">${rule.severity}</span>
-                                    <span class="rule-name">${rule.name}</span>
-                                    <span class="rule-desc">${rule.description}</span>
-                                </li>
-                            `).join('')}
-                        </ul>
+            ${customRules.length > 0 ? `
+                <div class="rules-category-group">
+                    <div class="rules-category-label">📄 自定义规则</div>
+                    <div class="rules-chips">
+                        ${customRules.map(rule => `
+                            <span class="rule-chip" title="${rule.description || rule.name}">
+                                <span class="dot dot-${rule.severity}"></span>
+                                ${rule.name}
+                            </span>
+                        `).join('')}
                     </div>
-                ` : ''}
-            </div>
-        </div>
-    `;
-}
-
-function renderScanCard() {
-    return `
-        <div class="card">
-            <div class="card-header">
-                <h2 class="card-title"><span class="icon">🔍</span> 扫描配置</h2>
-            </div>
-            <div class="form-group">
-                <label class="form-label">代码仓库路径</label>
-                <input type="text" class="form-input" id="repoPath"
-                       placeholder="/Users/xxx/your-java-project"
-                       value="${state.lastRepoPath || ''}" />
-            </div>
-            <div style="display: flex; gap: var(--space-sm); align-items: center;">
-                <button class="btn btn-primary" id="scanBtn" ${state.scanning ? 'disabled' : ''}>
-                    ${state.scanning
-            ? '<span class="loading-spinner"><span class="spinner"></span> 扫描中...</span>'
-            : '🚀 开始扫描'}
-                </button>
-            </div>
-
-            ${!state.scanReport && !state.scanning ? `
-                <div class="empty-state">
-                    <div class="icon">📂</div>
-                    <p>输入 Java 项目路径，点击扫描<br/>将检查所有 MyBatis XML 文件的 SQL 合规性</p>
                 </div>
             ` : ''}
         </div>
@@ -203,7 +285,7 @@ function renderScanCard() {
 function renderResults() {
     const report = state.scanReport;
 
-    // 按文件分组违规
+    // Group violations by file
     const grouped = {};
     report.violations.forEach(v => {
         const path = v.sqlFragment.relativePath;
@@ -211,7 +293,7 @@ function renderResults() {
         grouped[path].push(v);
     });
 
-    // 过滤
+    // Filter
     const filteredGrouped = {};
     for (const [path, violations] of Object.entries(grouped)) {
         const filtered = state.filter === 'ALL'
@@ -224,35 +306,38 @@ function renderResults() {
 
     return `
         <div class="scan-results">
-            <div class="card">
-                <div class="card-header">
-                    <h2 class="card-title"><span class="icon">📊</span> 扫描结果</h2>
-                    <span style="font-size: 0.8rem; color: var(--text-muted);">${report.scanTime}</span>
+            <div class="glass">
+                <div class="results-header">
+                    <div class="results-title">📊 审查结果</div>
+                    <div class="results-meta">
+                        <span class="results-time">${report.scanTime || ''}</span>
+                        <button class="btn btn-sm btn-ghost" id="clearResultsBtn">🗑️ 清除</button>
+                    </div>
                 </div>
 
-                <!-- 统计 -->
-                <div class="stats-bar">
-                    <div class="stat-card">
-                        <div class="stat-value" style="color: var(--text-accent);">${report.totalFiles}</div>
-                        <div class="stat-label">扫描文件数</div>
+                <!-- Stats -->
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value cyan">${report.totalFiles}</div>
+                        <div class="stat-label">扫描文件</div>
                     </div>
-                    <div class="stat-card">
-                        <div class="stat-value" style="color: var(--text-primary);">${report.totalStatements}</div>
-                        <div class="stat-label">SQL 语句数</div>
+                    <div class="stat-item">
+                        <div class="stat-value purple">${report.totalStatements}</div>
+                        <div class="stat-label">SQL 语句</div>
                     </div>
-                    <div class="stat-card stat-error">
-                        <div class="stat-value">${report.errorCount}</div>
+                    <div class="stat-item">
+                        <div class="stat-value error">${report.errorCount}</div>
                         <div class="stat-label">❌ 错误</div>
                     </div>
-                    <div class="stat-card stat-warning">
-                        <div class="stat-value">${report.warningCount}</div>
+                    <div class="stat-item">
+                        <div class="stat-value warning">${report.warningCount}</div>
                         <div class="stat-label">⚠️ 警告</div>
                     </div>
                 </div>
 
                 ${report.totalViolations === 0 ? renderPassResult(report) : renderViolations(filteredGrouped, report)}
 
-                <!-- 扫描的文件列表 -->
+                <!-- Scanned files -->
                 <div class="scanned-files-toggle" id="toggleScannedFiles">
                     ▸ 查看已扫描的 ${report.scannedFiles.length} 个文件
                 </div>
@@ -276,25 +361,25 @@ function renderPassResult(report) {
 
 function renderViolations(grouped, report) {
     return `
-        <!-- 过滤器 -->
+        <!-- Filters -->
         <div class="filter-bar">
-            <button class="filter-btn ${state.filter === 'ALL' ? 'active' : ''}" data-filter="ALL">
+            <button class="filter-pill ${state.filter === 'ALL' ? 'active' : ''}" data-filter="ALL">
                 全部 (${report.totalViolations})
             </button>
-            <button class="filter-btn ${state.filter === 'ERROR' ? 'active' : ''}" data-filter="ERROR">
+            <button class="filter-pill ${state.filter === 'ERROR' ? 'active' : ''}" data-filter="ERROR">
                 ❌ 错误 (${report.errorCount})
             </button>
-            <button class="filter-btn ${state.filter === 'WARNING' ? 'active' : ''}" data-filter="WARNING">
+            <button class="filter-pill ${state.filter === 'WARNING' ? 'active' : ''}" data-filter="WARNING">
                 ⚠️ 警告 (${report.warningCount})
             </button>
             ${report.infoCount > 0 ? `
-                <button class="filter-btn ${state.filter === 'INFO' ? 'active' : ''}" data-filter="INFO">
+                <button class="filter-pill ${state.filter === 'INFO' ? 'active' : ''}" data-filter="INFO">
                     ℹ️ 提示 (${report.infoCount})
                 </button>
             ` : ''}
         </div>
 
-        <!-- 按文件分组展示 -->
+        <!-- Violations by file -->
         ${Object.entries(grouped).map(([path, violations]) => `
             <div class="violation-group">
                 <div class="violation-file-header">
@@ -302,21 +387,25 @@ function renderViolations(grouped, report) {
                     <span class="violation-file-path">${path}</span>
                     <span class="violation-file-count">${violations.length} 项</span>
                 </div>
-                ${violations.map(v => `
-                    <div class="violation-item severity-border-${v.rule.severity}">
-                        <div class="violation-meta">
-                            <span class="rule-severity severity-${v.rule.severity}">${v.rule.severity}</span>
-                            ${v.rule.section ? `<span class="rule-section">§${v.rule.section}</span>` : ''}
-                            <span class="violation-rule-name">${v.rule.name}</span>
-                            <span class="violation-statement-id">${v.sqlFragment.statementType.toUpperCase()} #${v.sqlFragment.statementId}</span>
-                            <span class="violation-line">行 ${v.sqlFragment.lineNumber}</span>
-                        </div>
-                        <div class="violation-message">${v.message}</div>
-                        ${v.matchedText ? `<code class="violation-matched">${escapeHtml(v.matchedText)}</code>` : ''}
-                    </div>
-                `).join('')}
+                ${violations.map(v => renderViolationItem(v)).join('')}
             </div>
         `).join('')}
+    `;
+}
+
+function renderViolationItem(v) {
+    return `
+        <div class="violation-item severity-border-${v.rule.severity}">
+            <div class="violation-meta">
+                <span class="rule-severity severity-${v.rule.severity}">${v.rule.severity}</span>
+                ${v.rule.section ? `<span class="rule-section">§${v.rule.section}</span>` : ''}
+                <span class="violation-rule-name">${v.rule.name}</span>
+                <span class="violation-statement-id">${v.sqlFragment.statementType.toUpperCase()} #${v.sqlFragment.statementId}</span>
+                <span class="violation-line">行 ${v.sqlFragment.lineNumber}</span>
+            </div>
+            <div class="violation-message">${v.message}</div>
+            ${v.matchedText ? `<code class="violation-matched">${escapeHtml(v.matchedText)}</code>` : ''}
+        </div>
     `;
 }
 
@@ -344,7 +433,7 @@ function bindEvents() {
         });
     }
 
-    // File upload
+    // Word file upload
     const uploadZone = document.getElementById('uploadZone');
     const fileInput = document.getElementById('ruleFileInput');
     if (uploadZone) {
@@ -375,6 +464,18 @@ function bindEvents() {
         clearBtn.addEventListener('click', handleClearCustomRules);
     }
 
+    // Toggle format example
+    const toggleExample = document.getElementById('toggleFormatExample');
+    if (toggleExample) {
+        toggleExample.addEventListener('click', () => {
+            const panel = document.getElementById('formatExamplePanel');
+            panel.classList.toggle('hidden');
+            toggleExample.textContent = panel.classList.contains('hidden')
+                ? '💡 查看规范文档格式示例'
+                : '💡 收起格式示例';
+        });
+    }
+
     // Toggle scanned files
     const toggleFiles = document.getElementById('toggleScannedFiles');
     if (toggleFiles) {
@@ -387,13 +488,44 @@ function bindEvents() {
         });
     }
 
-    // Filter buttons
-    document.querySelectorAll('.filter-btn').forEach(btn => {
+    // Filter pills
+    document.querySelectorAll('.filter-pill').forEach(btn => {
         btn.addEventListener('click', () => {
             state.filter = btn.dataset.filter;
             render();
         });
     });
+
+    // Clear Results button
+    const clearResultsBtn = document.getElementById('clearResultsBtn');
+    if (clearResultsBtn) {
+        clearResultsBtn.addEventListener('click', handleClearResults);
+    }
+
+    // SQL file upload
+    const sqlUploadZone = document.getElementById('sqlUploadZone');
+    const sqlFileInput = document.getElementById('sqlFileInput');
+    if (sqlUploadZone) {
+        sqlUploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            sqlUploadZone.classList.add('dragover');
+        });
+        sqlUploadZone.addEventListener('dragleave', () => {
+            sqlUploadZone.classList.remove('dragover');
+        });
+        sqlUploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            sqlUploadZone.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file) handleSqlFileScan(file);
+        });
+    }
+    if (sqlFileInput) {
+        sqlFileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) handleSqlFileScan(file);
+        });
+    }
 }
 
 // ============================================
@@ -447,6 +579,35 @@ async function handleClearCustomRules() {
         await loadRules();
     } catch (err) {
         showToast(err.message, 'error');
+    }
+}
+
+function handleClearResults() {
+    state.scanReport = null;
+    render();
+    showToast('扫描结果已清除');
+}
+
+async function handleSqlFileScan(file) {
+    if (!file.name.toLowerCase().endsWith('.sql')) {
+        showToast('请上传 .sql 格式的 SQL 脚本文件', 'error');
+        return;
+    }
+
+    state.scanning = true;
+    state.scanReport = null;
+    state.filter = 'ALL';
+    render();
+
+    try {
+        const report = await api.scanSql(file);
+        state.scanReport = report;
+        showToast(`SQL 脚本审查完成：${report.totalStatements} 条语句，${report.totalViolations} 条违规`);
+    } catch (err) {
+        showToast(err.message, 'error');
+    } finally {
+        state.scanning = false;
+        render();
     }
 }
 

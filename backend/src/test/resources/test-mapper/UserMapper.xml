@@ -67,6 +67,17 @@
         SELECT count(*) FROM t_user WHERE status = 1
     </select>
 
+    <!-- ✅ OG_3_2_2: 缺少 Schema 前缀 -->
+    <select id="findWithoutSchema" resultType="User">
+        SELECT id FROM t_user WHERE id = 1
+    </select>
+
+    <!-- ✅ OG_3_9_3: SELECT 目标列含子查询 -->
+    <select id="findWithSubqueryInTarget" resultType="User">
+        SELECT id, (SELECT count(*) FROM t_order WHERE user_id = u.id) as order_count
+        FROM t_user u
+    </select>
+
     <!-- ✅ 正常语句（不触发违规） -->
     <select id="findById" resultType="User">
         SELECT id, username, email FROM t_user

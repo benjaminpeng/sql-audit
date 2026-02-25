@@ -78,30 +78,37 @@ public class RuleService {
 
     private Violation applyRule(AuditRule rule, SqlFragment fragment) {
         try {
-            if (rule.getType() == RuleType.BUILT_IN) {
-                SqlChecker checker = checkerMap.get(rule.getCheckerName());
-                if (checker == null) return null;
-                CheckResult result = checker.check(fragment);
-                if (result.violated()) {
-                    return Violation.builder()
-                            .rule(rule)
-                            .sqlFragment(fragment)
-                            .message(result.message())
-                            .matchedText(result.matchedText())
-                            .build();
+            return switch (rule.getType()) {
+                case BUILT_IN -> {
+                    SqlChecker checker = checkerMap.get(rule.getCheckerName());
+                    if (checker == null) yield null;
+                    CheckResult result = checker.check(fragment);
+                    if (result.violated()) {
+                        yield Violation.builder()
+                                .rule(rule)
+                                .sqlFragment(fragment)
+                                .message(result.message())
+                                .matchedText(result.matchedText())
+                                .build();
+                    }
+                    yield null;
                 }
-            } else if (rule.getType() == RuleType.REGEX && rule.getPattern() != null) {
-                Pattern pattern = Pattern.compile(rule.getPattern(), Pattern.CASE_INSENSITIVE);
-                Matcher matcher = pattern.matcher(fragment.getSqlText());
-                if (matcher.find()) {
-                    return Violation.builder()
-                            .rule(rule)
-                            .sqlFragment(fragment)
-                            .message("匹配到禁止使用的模式: " + rule.getDescription())
-                            .matchedText(matcher.group())
-                            .build();
+                case REGEX -> {
+                    if (rule.getPattern() == null) yield null;
+                    Pattern pattern = Pattern.compile(rule.getPattern(), Pattern.CASE_INSENSITIVE);
+                    Matcher matcher = pattern.matcher(fragment.getSqlText());
+                    if (matcher.find()) {
+                        yield Violation.builder()
+                                .rule(rule)
+                                .sqlFragment(fragment)
+                                .message("匹配到禁止使用的模式: " + rule.getDescription())
+                                .matchedText(matcher.group())
+                                .build();
+                    }
+                    yield null;
                 }
-            }
+                default -> null;
+            };
         } catch (Exception e) {
             log.warn("应用规则 {} 时出错: {}", rule.getId(), e.getMessage());
         }
@@ -113,6 +120,14 @@ public class RuleService {
      */
     private List<AuditRule> buildDefaultRules() {
         List<AuditRule> rules = new ArrayList<>();
+
+        // ========== 3.2 对象访问 ==========
+        rules.add(AuditRule.builder()
+                .id("OG_3_2_2").section("3.2.2").category("对象访问")
+                .name("建议使用Schema前缀")
+                .description("访问对象（表，函数等）时建议带上SCHEMA名称，避免不必要的性能开销")
+                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
+                .checkerName("SCHEMA_PREFIX").source(RuleSource.DEFAULT).build());
 
         // ========== 3.3 WHERE 子句 ==========
         rules.add(AuditRule.builder()
@@ -232,6 +247,13 @@ public class RuleService {
                 .checkerName("IMPLICIT_JOIN").source(RuleSource.DEFAULT).build());
 
         // ========== 3.9 子查询 ==========
+        rules.add(AuditRule.builder()
+                .id("OG_3_9_3").section("3.9.3").category("子查询")
+                .name("目标列禁用子查询")
+                .description("避免在 SELECT 目标列中使用子查询，可能导致计划无法下推影响执行性能")
+                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
+                .checkerName("SUBQUERY_IN_TARGET").source(RuleSource.DEFAULT).build());
+                
         rules.add(AuditRule.builder()
                 .id("OG_3_9_4").section("3.9.4").category("子查询")
                 .name("子查询嵌套不超过2层")
