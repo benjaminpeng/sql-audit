@@ -47,6 +47,9 @@ public class ScanReport {
     /** 扫描的文件列表 */
     private List<String> scannedFiles;
 
+    /** 扫描过程提示信息（如路径转换、性能提示、编码回退等） */
+    private List<String> notices;
+
     /** 是否因为违规过多达上限而截断 */
     private boolean limitReached;
 }

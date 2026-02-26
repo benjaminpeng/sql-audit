@@ -39,14 +39,15 @@ A powerful, automated SQL compliance scanner designed for **MyBatis XML Mapper**
 #### Quick Start (One-Click)
 
 ```bash
-chmod +x start.sh
-./start.sh
+bash ./start.sh
 ```
 
 This will:
 1. Kill any existing processes on ports 8080 and 5174.
-2. Build and start the Spring Boot backend.
-3. Start the Vite frontend dev server.
+2. Validate Java / Maven / Node.js versions (Java 21+, Node 18+).
+3. Auto-install frontend dependencies on first run (`npm install`).
+4. Build and start the Spring Boot backend.
+5. Start the Vite frontend dev server.
 
 Access the app at: **http://localhost:5174**
 
@@ -64,6 +65,16 @@ cd frontend
 npm install
 npm run dev -- --port 5174
 ```
+
+#### WSL (Windows Subsystem for Linux) Notes
+
+- Prefer running via `bash ./start.sh` (more reliable than `./start.sh` when the repo is on `/mnt/c` and execute permissions are limited).
+- In the UI, repository paths can be:
+  - Linux paths like `/home/you/project`
+  - WSL mount paths like `/mnt/c/Users/you/project`
+  - Windows paths like `C:\Users\you\project` (backend will auto-convert to `/mnt/c/...` on WSL)
+- For better performance, keep the project and scanned repositories under `/home/...` instead of `/mnt/c/...` when possible.
+- If frontend hot reload is unstable on WSL, this project already enables polling file watch mode automatically when running inside WSL.
 
 ### 🏗 Architecture
 
@@ -154,14 +165,15 @@ npm run dev -- --port 5174
 #### 一键启动
 
 ```bash
-chmod +x start.sh
-./start.sh
+bash ./start.sh
 ```
 
 脚本会自动：
 1. 终止 8080 和 5174 端口的已有进程。
-2. 编译并启动 Spring Boot 后端。
-3. 启动 Vite 前端开发服务器。
+2. 检查 Java / Maven / Node.js 版本（要求 Java 21+、Node 18+）。
+3. 首次运行自动安装前端依赖（`npm install`）。
+4. 编译并启动 Spring Boot 后端。
+5. 启动 Vite 前端开发服务器。
 
 打开浏览器访问：**http://localhost:5174**
 
@@ -179,6 +191,16 @@ cd frontend
 npm install
 npm run dev -- --port 5174
 ```
+
+#### WSL（Windows Subsystem for Linux）运行说明
+
+- 推荐使用 `bash ./start.sh` 启动（仓库放在 `/mnt/c` 时比 `./start.sh` 更稳，避免执行权限问题）。
+- 页面里的“仓库路径”支持：
+  - Linux 路径：`/home/you/project`
+  - WSL 挂载路径：`/mnt/c/Users/you/project`
+  - Windows 路径：`C:\Users\you\project`（后端会在 WSL 下自动转换为 `/mnt/c/...`）
+- 若追求性能，建议把项目和被扫描仓库放在 `/home/...`，避免 `/mnt/c/...` 的 I/O 开销。
+- 本项目在 WSL 下会自动启用 Vite 轮询监听，降低前端热更新不触发的问题。
 
 ### 🏗 架构概览
 

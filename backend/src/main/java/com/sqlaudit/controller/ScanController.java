@@ -4,12 +4,14 @@ import com.sqlaudit.model.AuditRule;
 import com.sqlaudit.model.ScanReport;
 import com.sqlaudit.service.RuleService;
 import com.sqlaudit.service.ScanService;
+import com.sqlaudit.util.TextDecodingUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -69,9 +71,18 @@ public class ScanController {
         }
 
         try {
-            String sqlContent = new String(file.getBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            log.info("收到 SQL 脚本审查请求: {}, 大小: {} bytes", filename, sqlContent.length());
-            ScanReport report = scanService.scanSqlContent(sqlContent, filename);
+            byte[] bytes = file.getBytes();
+            var decoded = TextDecodingUtils.decodeBestEffort(bytes);
+            String sqlContent = decoded.text();
+            log.info("收到 SQL 脚本审查请求: {}, 大小: {} bytes, 编码: {}", filename, bytes.length, decoded.charsetName());
+
+            List<String> notices = new ArrayList<>();
+            String decodeNotice = decoded.buildNotice(filename);
+            if (decodeNotice != null) {
+                notices.add(decodeNotice);
+            }
+
+            ScanReport report = scanService.scanSqlContent(sqlContent, filename, notices);
             return ResponseEntity.ok(report);
         } catch (Exception e) {
             log.error("SQL 脚本审查失败", e);

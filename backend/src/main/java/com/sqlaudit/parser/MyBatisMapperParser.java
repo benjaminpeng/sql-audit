@@ -5,9 +5,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.w3c.dom.*;
-import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
 import java.util.regex.Pattern;
@@ -24,8 +25,10 @@ public class MyBatisMapperParser {
 
     private static final Set<String> SQL_TAGS = Set.of("select", "insert", "update", "delete");
     private static final Pattern MYBATIS_PARAM_PATTERN = Pattern.compile("#\\{[^}]*}");
-    private static final Pattern DYNAMIC_TAG_PATTERN = Pattern.compile("<(?:if|choose|when|otherwise|where|set|trim|foreach|bind)[^>]*>|</(?:if|choose|when|otherwise|where|set|trim|foreach|bind)>");
-    private static final Pattern INCLUDE_TAG_PATTERN = Pattern.compile("<include\\s+refid=\"[^\"]*\"\\s*/?>|</include>");
+    private static final Pattern DYNAMIC_TAG_PATTERN = Pattern.compile(
+            "<(?:if|choose|when|otherwise|where|set|trim|foreach|bind)[^>]*>|</(?:if|choose|when|otherwise|where|set|trim|foreach|bind)>");
+    private static final Pattern INCLUDE_TAG_PATTERN = Pattern
+            .compile("<include\\s+refid=\"[^\"]*\"\\s*/?>|</include>");
     private static final Pattern MULTI_SPACE_PATTERN = Pattern.compile("\\s+");
 
     /**
@@ -35,15 +38,11 @@ public class MyBatisMapperParser {
         if (!file.getName().endsWith(".xml")) {
             return false;
         }
-        try (var reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            int lineCount = 0;
-            while ((line = reader.readLine()) != null && lineCount < 10) {
-                if (line.contains("<mapper") || line.contains("<!DOCTYPE mapper")) {
-                    return true;
-                }
-                lineCount++;
-            }
+        try {
+            byte[] bytes = Files.readAllBytes(file.toPath());
+            int headSize = Math.min(bytes.length, 8192);
+            String head = new String(bytes, 0, headSize, StandardCharsets.ISO_8859_1);
+            return head.contains("<mapper") || head.contains("<!DOCTYPE mapper");
         } catch (IOException e) {
             log.warn("Unable to read file: {}", file.getAbsolutePath(), e);
         }
@@ -125,17 +124,17 @@ public class MyBatisMapperParser {
     private String extractSqlText(Element element, Map<String, String> sqlFragmentMap) {
         var sb = new StringBuilder();
         var children = element.getChildNodes();
-        
+
         for (int i = 0; i < children.getLength(); i++) {
             var child = children.item(i);
-            
+
             // Use switch pattern matching on node type (if available) or standard switch
             Short nodeType = child.getNodeType();
-            
+
             switch (nodeType) {
-                case Node.TEXT_NODE, Node.CDATA_SECTION_NODE -> 
+                case Node.TEXT_NODE, Node.CDATA_SECTION_NODE ->
                     sb.append(child.getTextContent());
-                
+
                 case Node.ELEMENT_NODE -> {
                     var childElement = (Element) child;
                     if ("include".equals(childElement.getTagName())) {
@@ -182,8 +181,8 @@ public class MyBatisMapperParser {
 
     private String unescapeXml(String sql) {
         return sql.replace("&gt;", ">")
-                  .replace("&lt;", "<")
-                  .replace("&amp;", "&");
+                .replace("&lt;", "<")
+                .replace("&amp;", "&");
     }
 
     private String normalizeWhitespace(String sql) {
@@ -197,13 +196,18 @@ public class MyBatisMapperParser {
         if (statementId == null || statementId.isEmpty()) {
             return 1;
         }
-        try (var reader = new BufferedReader(new FileReader(file))) {
-            String line;
-            int lineNum = 0;
-            while ((line = reader.readLine()) != null) {
-                lineNum++;
-                if (line.contains("id=\"" + statementId + "\"")) {
-                    return lineNum;
+        String token = "id=\"" + statementId + "\"";
+        try {
+            // ISO_8859_1 做 1:1 字节映射，便于在未知编码文件中按 ASCII 令牌查找并统计行号。
+            String content = new String(Files.readAllBytes(file.toPath()), StandardCharsets.ISO_8859_1);
+            try (var reader = new BufferedReader(new StringReader(content))) {
+                String line;
+                int lineNum = 0;
+                while ((line = reader.readLine()) != null) {
+                    lineNum++;
+                    if (line.contains(token)) {
+                        return lineNum;
+                    }
                 }
             }
         } catch (IOException e) {

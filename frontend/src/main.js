@@ -328,6 +328,8 @@ function renderResults() {
                 </div>
                 ` : ''}
 
+                ${Array.isArray(report.notices) && report.notices.length > 0 ? renderNotices(report.notices) : ''}
+
                 <!-- Stats -->
                 <div class="stats-grid">
                     <div class="stat-item">
@@ -358,6 +360,17 @@ function renderResults() {
                     ${report.scannedFiles.map(f => `<li>📄 ${f}</li>`).join('')}
                 </ul>
             </div>
+        </div>
+    `;
+}
+
+function renderNotices(notices) {
+    return `
+        <div style="background: rgba(94, 175, 255, 0.08); border: 1px solid rgba(94, 175, 255, 0.24); color: rgba(230, 244, 255, 0.95); padding: 12px; border-radius: 10px; margin-bottom: 16px; font-size: 13px;">
+            <div style="font-weight: 600; margin-bottom: 6px;">运行提示</div>
+            <ul style="margin: 0; padding-left: 18px; display: grid; gap: 4px;">
+                ${notices.map(n => `<li>${escapeHtml(n)}</li>`).join('')}
+            </ul>
         </div>
     `;
 }
