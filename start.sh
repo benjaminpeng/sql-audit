@@ -2,14 +2,32 @@
 
 # 1. Stop existing processes
 echo "Stopping existing services..."
-lsof -ti:8080 | xargs kill -9 2>/dev/null
-lsof -ti:5174 | xargs kill -9 2>/dev/null
+# Use lsof if available (Mac/Linux), fallback to fuser (common on Linux/WSL)
+if command -v lsof >/dev/null 2>&1; then
+    lsof -ti:8080 | xargs kill -9 2>/dev/null || true
+    lsof -ti:5174 | xargs kill -9 2>/dev/null || true
+elif command -v fuser >/dev/null 2>&1; then
+    fuser -k 8080/tcp 2>/dev/null || true
+    fuser -k 5174/tcp 2>/dev/null || true
+fi
+
+# OS Detection for proper environment variables
+OS="$(uname -s)"
+if [ "$OS" = "Darwin" ]; then
+    # Mac specific JAVA_HOME
+    if [ -d "/opt/homebrew/opt/openjdk@21" ]; then
+        export JAVA_HOME=/opt/homebrew/opt/openjdk@21
+    fi
+elif [ "$OS" = "Linux" ]; then
+    # Linux/WSL specific JAVA_HOME (optional fallback)
+    if [ -d "/usr/lib/jvm/java-21-openjdk-amd64" ]; then
+        export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+    fi
+fi
 
 # 2. Start Backend
-echo "Starting SQL Audit Backend..."
+echo "Starting SQL Audit Backend on $OS..."
 cd backend
-# Use the Java 21 path as observed in user's environment
-export JAVA_HOME=/opt/homebrew/opt/openjdk@21
 nohup mvn spring-boot:run > backend.log 2>&1 &
 BACKEND_PID=$!
 echo "Backend started (PID: $BACKEND_PID). Logs: backend/backend.log"

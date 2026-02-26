@@ -313,6 +313,7 @@ function renderResults() {
                     <div class="results-title">📊 审查结果</div>
                     <div class="results-meta">
                         <span class="results-time">${report.scanTime || ''}</span>
+                        <button class="btn btn-sm btn-ghost" id="exportMarkdownBtn">📄 导出 MD</button>
                         <button class="btn btn-sm btn-ghost" id="clearResultsBtn">🗑️ 清除</button>
                     </div>
                 </div>
@@ -546,6 +547,12 @@ function bindEvents() {
         clearResultsBtn.addEventListener('click', handleClearResults);
     }
 
+    // Export Markdown button
+    const exportMarkdownBtn = document.getElementById('exportMarkdownBtn');
+    if (exportMarkdownBtn) {
+        exportMarkdownBtn.addEventListener('click', handleExportMarkdown);
+    }
+
     // SQL file upload
     const sqlUploadZone = document.getElementById('sqlUploadZone');
     const sqlFileInput = document.getElementById('sqlFileInput');
@@ -636,6 +643,70 @@ function handleClearResults() {
     state.currentPage = 1;
     render();
     showToast('扫描结果已清除');
+}
+
+function handleExportMarkdown() {
+    const report = state.scanReport;
+    if (!report) return;
+
+    let md = `# SQL 审计规范审查报告\n\n`;
+    md += `**扫描时间:** ${report.scanTime || new Date().toLocaleString()}\n`;
+    md += `**扫描范围:** \`${report.repoPath}\`\n\n`;
+
+    if (report.limitReached) {
+        md += `> ⚠️ **警告：扫描结果被截断**\n`;
+        md += `> 检测到极多违规项，为保证系统性能，仅保存并展示前 1000 条。建议缩小扫描范围或优化当前规则集。\n\n`;
+    }
+
+    md += `## 📊 统计摘要\n`;
+    md += `- **扫描文件总数:** ${report.totalFiles}\n`;
+    md += `- **SQL 语句总数:** ${report.totalStatements}\n`;
+    md += `- **违规总数:** ${report.totalViolations} (❌ 错误: ${report.errorCount}, ⚠️ 警告: ${report.warningCount}, ℹ️ 提示: ${report.infoCount})\n\n`;
+
+    if (report.totalViolations === 0) {
+        md += `✅ **恭喜！所有 SQL 语句均符合规范**\n`;
+    } else {
+        md += `## 🚫 违规详情\n\n`;
+
+        // Group by file
+        const grouped = {};
+        report.violations.forEach(v => {
+            const path = v.sqlFragment.relativePath;
+            if (!grouped[path]) grouped[path] = [];
+            grouped[path].push(v);
+        });
+
+        for (const [path, violations] of Object.entries(grouped)) {
+            md += `### 📄 \`${path}\` (${violations.length} 项)\n\n`;
+            violations.forEach(v => {
+                md += `**[${v.rule.severity}]** ${v.rule.section ? '§' + v.rule.section + ' ' : ''}${v.rule.name}\n`;
+                md += `- **位置:** 行 ${v.sqlFragment.lineNumber} (${v.sqlFragment.statementType.toUpperCase()} #${v.sqlFragment.statementId})\n`;
+                md += `- **说明:** ${v.message}\n`;
+                if (v.matchedText) {
+                    md += `- **匹配内容:** \`${v.matchedText.replace(/\\n/g, ' ')}\`\n`;
+                }
+                md += `\n`;
+            });
+        }
+
+        md += `## 📁 扫描文件列表\n\n`;
+        report.scannedFiles.forEach(f => {
+            md += `- \`${f}\`\n`;
+        });
+    }
+
+    // Download blob
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `sql-audit-report-${Date.now()}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast('Markdown 报告导出成功');
 }
 
 async function handleSqlFileScan(file) {
