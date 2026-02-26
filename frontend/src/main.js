@@ -451,6 +451,7 @@ function renderViolations(grouped, report) {
 }
 
 function renderViolationItem(v) {
+    const exampleId = v.exampleSql ? buildExampleSqlElementId(v) : null;
     return `
         <div class="violation-item severity-border-${v.rule.severity}">
             <div class="violation-meta">
@@ -461,6 +462,27 @@ function renderViolationItem(v) {
                 <span class="violation-line">行 ${v.sqlFragment.lineNumber}</span>
             </div>
             <div class="violation-message">${v.message}</div>
+            ${v.suggestion ? `
+                <div class="violation-suggestion">
+                    <span class="violation-suggestion-label">修复建议</span>
+                    <div class="violation-suggestion-text">${escapeHtml(v.suggestion)}</div>
+                </div>
+            ` : ''}
+            ${v.exampleSql ? `
+                <div class="violation-example">
+                    <div class="violation-example-toolbar">
+                        <span class="violation-suggestion-label">示例改写 SQL（需人工确认）</span>
+                        <button class="btn btn-sm btn-ghost example-copy-btn" data-copy-example-sql="${exampleId}">
+                            复制示例 SQL
+                        </button>
+                    </div>
+                    <pre class="violation-example-sql"><code id="${exampleId}">${escapeHtml(v.exampleSql)}</code></pre>
+                    <details class="violation-diff">
+                        <summary>查看原 SQL / 示例 SQL 对比</summary>
+                        ${renderSqlCompare(v.sqlFragment?.sqlText || '', v.exampleSql)}
+                    </details>
+                </div>
+            ` : ''}
             ${v.matchedText ? `<code class="violation-matched">${escapeHtml(v.matchedText)}</code>` : ''}
         </div>
     `;
@@ -470,6 +492,90 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function hashString(text) {
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) - hash) + text.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash).toString(36);
+}
+
+function buildExampleSqlElementId(v) {
+    const seed = [
+        v?.sqlFragment?.relativePath || '',
+        v?.sqlFragment?.statementId || '',
+        v?.sqlFragment?.lineNumber || '',
+        v?.rule?.id || v?.rule?.name || '',
+        v?.exampleSql || ''
+    ].join('|');
+    return `example-sql-${hashString(seed)}`;
+}
+
+function splitSqlLines(sql) {
+    const normalized = String(sql ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = normalized.split('\n');
+    return lines.length === 1 && lines[0] === '' ? [] : lines;
+}
+
+function renderSqlCompare(originalSql, exampleSql) {
+    const leftLines = splitSqlLines(originalSql);
+    const rightLines = splitSqlLines(exampleSql);
+    const size = Math.max(leftLines.length, rightLines.length);
+    const leftRows = [];
+    const rightRows = [];
+
+    for (let i = 0; i < size; i++) {
+        const left = leftLines[i] ?? '';
+        const right = rightLines[i] ?? '';
+        const changed = left.trimEnd() !== right.trimEnd();
+        const rowClass = changed ? ' changed' : '';
+
+        leftRows.push(`
+            <div class="sql-compare-row${rowClass}">
+                <span class="sql-compare-line-no">${i + 1}</span>
+                <code class="sql-compare-code">${escapeHtml(left || ' ')}</code>
+            </div>
+        `);
+        rightRows.push(`
+            <div class="sql-compare-row${rowClass}">
+                <span class="sql-compare-line-no">${i + 1}</span>
+                <code class="sql-compare-code">${escapeHtml(right || ' ')}</code>
+            </div>
+        `);
+    }
+
+    return `
+        <div class="sql-compare-grid">
+            <div class="sql-compare-panel">
+                <div class="sql-compare-title">原 SQL</div>
+                <div class="sql-compare-body">${leftRows.join('')}</div>
+            </div>
+            <div class="sql-compare-panel">
+                <div class="sql-compare-title">示例 SQL</div>
+                <div class="sql-compare-body">${rightRows.join('')}</div>
+            </div>
+        </div>
+    `;
+}
+
+async function copyText(text) {
+    if (!text) return;
+    if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
 }
 
 // ============================================
@@ -551,6 +657,25 @@ function bindEvents() {
         btn.addEventListener('click', () => {
             state.filter = btn.dataset.filter;
             render();
+        });
+    });
+
+    // Copy example SQL buttons
+    document.querySelectorAll('.example-copy-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const targetId = btn.dataset.copyExampleSql;
+            const codeEl = targetId ? document.getElementById(targetId) : null;
+            if (!codeEl) {
+                showToast('未找到示例 SQL', 'error');
+                return;
+            }
+            try {
+                await copyText(codeEl.textContent || '');
+                showToast('示例 SQL 已复制');
+            } catch (err) {
+                console.error('复制失败', err);
+                showToast('复制失败，请手动复制', 'error');
+            }
         });
     });
 
@@ -695,6 +820,13 @@ function handleExportMarkdown() {
                 md += `**[${v.rule.severity}]** ${v.rule.section ? '§' + v.rule.section + ' ' : ''}${v.rule.name}\n`;
                 md += `- **位置:** 行 ${v.sqlFragment.lineNumber} (${v.sqlFragment.statementType.toUpperCase()} #${v.sqlFragment.statementId})\n`;
                 md += `- **说明:** ${v.message}\n`;
+                if (v.suggestion) {
+                    md += `- **修复建议:** ${v.suggestion}\n`;
+                }
+                if (v.exampleSql) {
+                    md += `- **示例改写 SQL（需人工确认）:**\n\n`;
+                    md += `\`\`\`sql\n${v.exampleSql}\n\`\`\`\n`;
+                }
                 if (v.matchedText) {
                     md += `- **匹配内容:** \`${v.matchedText.replace(/\\n/g, ' ')}\`\n`;
                 }

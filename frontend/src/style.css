@@ -931,6 +931,158 @@ body::after {
     margin-bottom: var(--s-xs);
 }
 
+.violation-suggestion {
+    margin-bottom: var(--s-xs);
+    padding: 8px 10px;
+    border-radius: var(--r-sm);
+    background: rgba(94, 175, 255, 0.08);
+    border: 1px solid rgba(94, 175, 255, 0.22);
+}
+
+.violation-suggestion-label {
+    display: inline-block;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    margin-bottom: 4px;
+}
+
+.violation-suggestion-text {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
+.violation-example {
+    margin-bottom: var(--s-xs);
+}
+
+.violation-example-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-sm);
+    flex-wrap: wrap;
+}
+
+.example-copy-btn {
+    font-size: 0.72rem;
+    padding: 4px 8px;
+}
+
+.violation-example-sql {
+    margin: 6px 0 0 0;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-x: auto;
+}
+
+.violation-example-sql code {
+    font-family: inherit;
+}
+
+.violation-diff {
+    margin-top: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: var(--r-sm);
+    background: rgba(255, 255, 255, 0.02);
+    overflow: hidden;
+}
+
+.violation-diff summary {
+    cursor: pointer;
+    padding: 8px 10px;
+    color: var(--text-secondary);
+    font-size: 0.76rem;
+    user-select: none;
+}
+
+.violation-diff summary:hover {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.sql-compare-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sql-compare-panel {
+    min-width: 0;
+}
+
+.sql-compare-panel + .sql-compare-panel {
+    border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sql-compare-title {
+    padding: 8px 10px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(255, 255, 255, 0.015);
+}
+
+.sql-compare-body {
+    max-height: 260px;
+    overflow: auto;
+}
+
+.sql-compare-row {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 8px;
+    align-items: start;
+    padding: 3px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.sql-compare-row.changed {
+    background: rgba(94, 175, 255, 0.06);
+}
+
+.sql-compare-line-no {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    text-align: right;
+    padding-top: 1px;
+    user-select: none;
+}
+
+.sql-compare-code {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+@media (max-width: 900px) {
+    .sql-compare-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .sql-compare-panel + .sql-compare-panel {
+        border-left: none;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+}
+
 .violation-matched {
     font-family: var(--font-mono);
     font-size: 0.78rem;

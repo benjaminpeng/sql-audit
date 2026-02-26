@@ -25,6 +25,36 @@ import java.util.stream.Collectors;
 public class RuleService {
 
         private static final Logger log = LoggerFactory.getLogger(RuleService.class);
+        private static final Pattern TRAILING_SEMICOLON = Pattern.compile(";\\s*$");
+        private static final Pattern SELECT_STAR_REWRITE = Pattern.compile(
+                        "\\bSELECT\\s+(DISTINCT\\s+)?\\*\\b",
+                        Pattern.CASE_INSENSITIVE);
+        private static final Pattern NULL_EQ_REWRITE = Pattern.compile("=\\s*NULL\\b", Pattern.CASE_INSENSITIVE);
+        private static final Pattern NULL_NE_REWRITE = Pattern.compile("(!=|<>)\\s*NULL\\b", Pattern.CASE_INSENSITIVE);
+        private static final Pattern UNION_WITHOUT_ALL = Pattern.compile("\\bUNION\\b(?!\\s+ALL\\b)",
+                        Pattern.CASE_INSENSITIVE);
+        private static final Pattern DOLLAR_PARAM = Pattern.compile("\\$\\{\\s*([^}]+?)\\s*}");
+        private static final Pattern SIMPLE_DELETE_TABLE = Pattern.compile("^\\s*DELETE\\s+FROM\\s+([\\w.]+)\\s*;?\\s*$",
+                        Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        private static final Pattern LOCK_TABLE_PATTERN = Pattern.compile("\\bLOCK\\s+TABLE\\s+([\\w.]+)\\b",
+                        Pattern.CASE_INSENSITIVE);
+        private static final Pattern UPDATE_LIMIT_CLAUSE = Pattern.compile("\\s+LIMIT\\s+\\d+(\\s*,\\s*\\d+)?\\s*$",
+                        Pattern.CASE_INSENSITIVE);
+        private static final Pattern LIKE_PREFIX_LITERAL = Pattern.compile(
+                        "(?i)LIKE\\s+(['\"])%([^'\"]*)\\1");
+        private static final Pattern TABLE_REF_NO_SCHEMA = Pattern.compile(
+                        "\\b(from|join|update|into)\\s+([a-zA-Z_][a-zA-Z0-9_]*)(?!\\.)",
+                        Pattern.CASE_INSENSITIVE);
+        private static final Pattern WORD_PATTERN = Pattern.compile("\\b([a-zA-Z]+)\\b");
+        private static final Set<String> SQL_KEYWORDS = Set.of(
+                        "select", "from", "where", "and", "or", "not", "in",
+                        "insert", "into", "values", "update", "set", "delete",
+                        "join", "left", "right", "inner", "outer", "on",
+                        "group", "by", "order", "having", "limit", "offset",
+                        "as", "is", "null", "like", "between", "exists",
+                        "union", "all", "distinct", "case", "when", "then",
+                        "else", "end", "create", "alter", "drop", "table",
+                        "truncate", "for", "count", "sum", "avg", "max", "min");
 
         private final Map<String, SqlChecker> checkerMap;
         private final WordRuleParser wordRuleParser;
@@ -92,6 +122,8 @@ public class RuleService {
                                                                 .rule(rule)
                                                                 .sqlFragment(fragment)
                                                                 .message(result.message())
+                                                                .suggestion(buildSuggestion(rule, fragment, result))
+                                                                .exampleSql(buildExampleSql(rule, fragment, result))
                                                                 .matchedText(result.matchedText())
                                                                 .build();
                                         }
@@ -109,6 +141,8 @@ public class RuleService {
                                                                 .rule(rule)
                                                                 .sqlFragment(fragment)
                                                                 .message("匹配到禁止使用的模式: " + rule.getDescription())
+                                                                .suggestion(buildRegexSuggestion(rule, matcher.group()))
+                                                                .exampleSql(buildRegexExampleSql(rule, fragment, matcher.group()))
                                                                 .matchedText(matcher.group())
                                                                 .build();
                                         }
@@ -120,6 +154,381 @@ public class RuleService {
                         log.warn("应用规则 {} 时出错: {}", rule.getId(), e.getMessage());
                 }
                 return null;
+        }
+
+        private String buildSuggestion(AuditRule rule, SqlFragment fragment, CheckResult result) {
+                String checkerName = rule.getCheckerName();
+                if (checkerName == null || checkerName.isBlank()) {
+                        return buildGenericSuggestion(rule, fragment);
+                }
+
+                String type = fragment.getStatementType() == null ? "" : fragment.getStatementType().toLowerCase(Locale.ROOT);
+                return switch (checkerName) {
+                        case "NO_SELECT_STAR" -> "将 `SELECT *` 改为显式列名，例如 `SELECT id, name FROM ...`，避免多取字段和后续表结构变更风险。";
+                        case "NULL_COMPARISON" -> "将 `= NULL` / `!= NULL` 改为 `IS NULL` / `IS NOT NULL`。例如：`col IS NULL`。";
+                        case "WHERE_FUNCTION" -> "尽量避免在 WHERE 条件列上包函数；可把函数移到常量侧，或新增冗余列/函数索引后再查询。";
+                        case "NOT_EQUAL_OPS" -> "优先改写为正向条件（如 `IN`、范围条件、等值匹配），减少 `!=`/`<>` 导致的索引利用下降。";
+                        case "LIKE_PERCENT_START" -> "避免前置 `%`（如 `%abc`）。优先使用前缀匹配（如 `abc%`）；若必须模糊搜索，考虑全文索引/检索方案。";
+                        case "IN_LIST_SIZE" -> "缩小 `IN (...)` 列表规模（建议分批 <= 100），或改为临时表/批量表 JOIN。";
+                        case "LOCK_TABLE" -> "避免 `LOCK TABLE`；如需并发控制，优先使用事务 + `SELECT ... FOR UPDATE`。";
+                        case "UNION_ALL" -> "若业务不需要去重，将 `UNION` 改为 `UNION ALL`，减少排序和去重开销。";
+                        case "COUNT_USAGE" -> "确认 `count()` 是否必须实时精确；大表可考虑缓存计数、近似统计或增加更精确的过滤条件。";
+                        case "REQUIRE_LIMIT" -> "为大结果集查询增加分页条件（如 `LIMIT ? OFFSET ?`），并搭配稳定排序（如 `ORDER BY id`）。";
+                        case "UPDATE_LIMIT" -> "OpenGauss 不支持 `UPDATE ... LIMIT`；可改为子查询/CTE 先选主键，再按主键 UPDATE。";
+                        case "REQUIRE_WHERE" -> "为 `" + type.toUpperCase(Locale.ROOT) + "` 语句补充 WHERE 条件，并先用 SELECT 验证影响行范围后再执行。";
+                        case "DELETE_TRUNCATE" -> "若确实要清空整表，改为 `TRUNCATE TABLE 表名`；若只删部分数据，请补充 WHERE 条件。";
+                        case "JOIN_TABLE_COUNT" -> "拆分过长联表查询（>8 表）为中间结果/临时表/CTE 分步处理，并优先保留核心过滤条件。";
+                        case "IMPLICIT_JOIN" -> "将逗号连接改为显式 `JOIN ... ON ...`，例如 `FROM a JOIN b ON a.id = b.a_id`。";
+                        case "SUBQUERY_IN_TARGET" -> "将 SELECT 列中的子查询改写为 JOIN 或预聚合子查询（CTE/派生表），便于优化器下推。";
+                        case "SUBQUERY_DEPTH" -> "降低子查询嵌套层级（建议 <= 2），可用 CTE（`WITH`）分层表达业务逻辑。";
+                        case "SCHEMA_PREFIX" -> "为表/函数引用补充 schema 前缀（如 `public.user_info`），减少对象解析歧义和额外开销。";
+                        case "SQL_INJECTION_RISK" -> "将 MyBatis `${}` 字符串拼接改为 `#{}` 参数绑定；若必须拼接标识符，请做白名单校验。";
+                        case "KEYWORD_UPPERCASE" -> "统一 SQL 关键字大小写风格（推荐大写，如 `SELECT`, `FROM`, `WHERE`），并在格式化工具中固化规则。";
+                        default -> buildGenericSuggestion(rule, fragment);
+                };
+        }
+
+        private String buildExampleSql(AuditRule rule, SqlFragment fragment, CheckResult result) {
+                String checkerName = rule.getCheckerName();
+                if (checkerName == null || checkerName.isBlank()) {
+                        return buildGenericExampleSql(fragment, result);
+                }
+
+                String sql = fragment.getSqlText();
+                if (sql == null || sql.isBlank()) {
+                        return null;
+                }
+
+                return switch (checkerName) {
+                        case "NO_SELECT_STAR" -> rewriteSelectStar(sql);
+                        case "NULL_COMPARISON" -> rewriteNullComparison(sql);
+                        case "LIKE_PERCENT_START" -> rewriteLikeLeadingPercent(sql);
+                        case "UNION_ALL" -> rewriteUnionAll(sql);
+                        case "REQUIRE_LIMIT" -> rewriteRequireLimit(sql);
+                        case "UPDATE_LIMIT" -> rewriteUpdateLimit(sql);
+                        case "REQUIRE_WHERE" -> rewriteRequireWhere(sql, fragment.getStatementType());
+                        case "DELETE_TRUNCATE" -> rewriteDeleteTruncate(sql);
+                        case "SQL_INJECTION_RISK" -> rewriteMyBatisDollarPlaceholder(sql);
+                        case "SCHEMA_PREFIX" -> rewriteSchemaPrefix(sql);
+                        case "KEYWORD_UPPERCASE" -> rewriteKeywordUppercase(sql);
+                        case "LOCK_TABLE" -> rewriteLockTable(sql);
+                        case "IMPLICIT_JOIN" -> rewriteImplicitJoin(sql, result == null ? null : result.matchedText());
+                        case "NOT_EQUAL_OPS" -> rewriteNotEqualOps(sql, result == null ? null : result.matchedText());
+                        case "IN_LIST_SIZE" -> rewriteInListSize(sql);
+                        case "COUNT_USAGE" -> rewriteCountUsage(sql);
+                        case "WHERE_FUNCTION" -> rewriteWhereFunction(sql, result == null ? null : result.matchedText());
+                        case "SUBQUERY_IN_TARGET" -> rewriteSubqueryTarget(sql);
+                        case "SUBQUERY_DEPTH" -> rewriteSubqueryDepth(sql);
+                        case "JOIN_TABLE_COUNT" -> rewriteJoinTableCount(sql);
+                        default -> buildGenericExampleSql(fragment, result);
+                };
+        }
+
+        private String buildRegexExampleSql(AuditRule rule, SqlFragment fragment, String matchedText) {
+                String sql = fragment.getSqlText();
+                if (sql == null || sql.isBlank()) {
+                        return null;
+                }
+
+                String desc = Optional.ofNullable(rule.getDescription()).orElse("").toLowerCase(Locale.ROOT);
+                if (desc.contains("${") || desc.contains("注入") || desc.contains("injection")) {
+                        return rewriteMyBatisDollarPlaceholder(sql);
+                }
+
+                return "-- 示例改写（请结合自定义规则人工确认）\n"
+                                + "-- 当前命中模式: " + sanitizeInlineComment(matchedText) + "\n"
+                                + ensureSemicolon(sql);
+        }
+
+        private String buildRegexSuggestion(AuditRule rule, String matchedText) {
+                if (rule.getDescription() != null && !rule.getDescription().isBlank()) {
+                        return "请根据自定义规则描述修复该处 SQL：" + rule.getDescription()
+                                        + (matchedText != null ? "（当前匹配到: `" + matchedText + "`）" : "");
+                }
+                return "请修改或删除匹配到的 SQL 模式，确保不再命中自定义正则规则。";
+        }
+
+        private String buildGenericSuggestion(AuditRule rule, SqlFragment fragment) {
+                String category = rule.getCategory() == null ? "SQL 规范" : rule.getCategory();
+                String type = fragment.getStatementType() == null ? "SQL" : fragment.getStatementType().toUpperCase(Locale.ROOT);
+                if (rule.getDescription() != null && !rule.getDescription().isBlank()) {
+                        return "按 " + category + " 规范修正该 " + type + "："
+                                        + rule.getDescription()
+                                        + "。建议先在测试环境验证执行计划和影响行数。";
+                }
+                return "请根据规则要求修正该 " + type + "，并在测试环境验证语义和性能无回归。";
+        }
+
+        private String rewriteSelectStar(String sql) {
+                Matcher matcher = SELECT_STAR_REWRITE.matcher(sql);
+                if (!matcher.find()) {
+                        return ensureSemicolon(sql);
+                }
+                String distinct = matcher.group(1) == null ? "" : matcher.group(1).toUpperCase(Locale.ROOT);
+                String replacement = "SELECT " + distinct + "/* TODO: 显式列名 */ col1, col2";
+                return ensureSemicolon(matcher.replaceFirst(Matcher.quoteReplacement(replacement)));
+        }
+
+        private String rewriteNullComparison(String sql) {
+                String rewritten = NULL_NE_REWRITE.matcher(sql).replaceAll("IS NOT NULL");
+                rewritten = NULL_EQ_REWRITE.matcher(rewritten).replaceAll("IS NULL");
+                return ensureSemicolon(rewritten);
+        }
+
+        private String rewriteLikeLeadingPercent(String sql) {
+                Matcher matcher = LIKE_PREFIX_LITERAL.matcher(sql);
+                StringBuffer sb = new StringBuffer();
+                boolean changed = false;
+                while (matcher.find()) {
+                        changed = true;
+                        String quote = matcher.group(1);
+                        String tail = matcher.group(2);
+                        String replacement = "LIKE " + quote + tail + "%" + quote
+                                        + " /* TODO: 示例改写，需确认语义 */";
+                        matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+                }
+                if (!changed) {
+                        return "-- 示例：将前置 % 的 LIKE 调整为可走索引的匹配（需确认业务语义）\n" + ensureSemicolon(sql);
+                }
+                matcher.appendTail(sb);
+                return ensureSemicolon(sb.toString());
+        }
+
+        private String rewriteUnionAll(String sql) {
+                return ensureSemicolon(UNION_WITHOUT_ALL.matcher(sql).replaceAll("UNION ALL"));
+        }
+
+        private String rewriteRequireLimit(String sql) {
+                String base = stripTrailingSemicolon(sql);
+                String upper = base.toUpperCase(Locale.ROOT);
+                if (upper.contains(" LIMIT ")) {
+                        return ensureSemicolon(base);
+                }
+                if (upper.contains(" ORDER BY ")) {
+                        return ensureSemicolon(base + "\nLIMIT 100");
+                }
+                return ensureSemicolon(base + "\nORDER BY /* TODO: 稳定排序列 */ id\nLIMIT 100");
+        }
+
+        private String rewriteUpdateLimit(String sql) {
+                String base = stripTrailingSemicolon(sql);
+                String noLimit = UPDATE_LIMIT_CLAUSE.matcher(base).replaceFirst("");
+                if (!noLimit.equals(base)) {
+                        if (!noLimit.toUpperCase(Locale.ROOT).contains(" WHERE ")) {
+                                noLimit = noLimit + "\nWHERE /* TODO: 用明确条件替代 LIMIT */";
+                        }
+                        return ensureSemicolon(noLimit);
+                }
+                return "-- OpenGauss 不支持 UPDATE ... LIMIT，示例请改为明确 WHERE 条件\n"
+                                + ensureSemicolon(base + "\nWHERE /* TODO: 主键/业务条件 */");
+        }
+
+        private String rewriteRequireWhere(String sql, String statementType) {
+                String base = stripTrailingSemicolon(sql);
+                if (base.toUpperCase(Locale.ROOT).contains(" WHERE ")) {
+                        return ensureSemicolon(base);
+                }
+                String label = "delete".equalsIgnoreCase(statementType) ? "删除条件" : "更新条件";
+                return ensureSemicolon(base + "\nWHERE /* TODO: " + label + " */");
+        }
+
+        private String rewriteDeleteTruncate(String sql) {
+                Matcher matcher = SIMPLE_DELETE_TABLE.matcher(sql);
+                if (matcher.matches()) {
+                        return "TRUNCATE TABLE " + matcher.group(1) + ";";
+                }
+                return "-- 若目标是清空整表，可改用 TRUNCATE TABLE；否则请补充 WHERE\n" + ensureSemicolon(sql);
+        }
+
+        private String rewriteMyBatisDollarPlaceholder(String sql) {
+                String rewritten = DOLLAR_PARAM.matcher(sql).replaceAll("#{$1}");
+                if (rewritten.equals(sql)) {
+                        return "-- 示例：将 `${param}` 改为 `#{param}` 参数绑定\n" + ensureSemicolon(sql);
+                }
+                return ensureSemicolon(rewritten);
+        }
+
+        private String rewriteSchemaPrefix(String sql) {
+                Matcher matcher = TABLE_REF_NO_SCHEMA.matcher(sql);
+                StringBuffer sb = new StringBuffer();
+                boolean changed = false;
+                while (matcher.find()) {
+                        changed = true;
+                        String replacement = matcher.group(1) + " public." + matcher.group(2);
+                        matcher.appendReplacement(sb, Matcher.quoteReplacement(replacement));
+                }
+                matcher.appendTail(sb);
+                if (!changed) {
+                        return "-- 示例：在表名/函数名前补充 schema（如 public.xxx）\n" + ensureSemicolon(sql);
+                }
+                return ensureSemicolon(sb.toString());
+        }
+
+        private String rewriteKeywordUppercase(String sql) {
+                Matcher matcher = WORD_PATTERN.matcher(sql);
+                StringBuffer sb = new StringBuffer();
+                boolean changed = false;
+                while (matcher.find()) {
+                        String word = matcher.group(1);
+                        String lower = word.toLowerCase(Locale.ROOT);
+                        if (SQL_KEYWORDS.contains(lower) && !word.equals(word.toUpperCase(Locale.ROOT))) {
+                                changed = true;
+                                matcher.appendReplacement(sb, Matcher.quoteReplacement(word.toUpperCase(Locale.ROOT)));
+                        } else {
+                                matcher.appendReplacement(sb, Matcher.quoteReplacement(word));
+                        }
+                }
+                matcher.appendTail(sb);
+                return ensureSemicolon(changed ? sb.toString() : sql);
+        }
+
+        private String rewriteLockTable(String sql) {
+                Matcher matcher = LOCK_TABLE_PATTERN.matcher(sql);
+                if (matcher.find()) {
+                        String table = matcher.group(1);
+                        return "BEGIN;\nSELECT *\nFROM " + table
+                                        + "\nWHERE /* TODO: 锁定目标行 */\nFOR UPDATE;\n-- ...执行业务 SQL...\nCOMMIT;";
+                }
+                return "-- 示例：使用事务 + SELECT ... FOR UPDATE 代替 LOCK TABLE\n"
+                                + "BEGIN;\nSELECT * FROM your_table WHERE id = ? FOR UPDATE;\nCOMMIT;";
+        }
+
+        private String rewriteImplicitJoin(String sql, String matchedText) {
+                List<String> tables = extractTablesFromImplicitJoin(matchedText);
+                if (tables.size() >= 2) {
+                        return "SELECT /* TODO: columns */\nFROM " + tables.get(0) + " t1\nJOIN " + tables.get(1)
+                                        + " t2 ON t1.id = t2." + guessFkColumn(tables.get(0))
+                                        + "\nWHERE /* TODO: conditions */;";
+                }
+                return "-- 示例：将隐式 JOIN 改为显式 JOIN ... ON ...\n" + ensureSemicolon(sql);
+        }
+
+        private String rewriteNotEqualOps(String sql, String matched) {
+                String prefix;
+                if (matched == null) {
+                        prefix = "-- 示例：改写为正向条件（如 IN / 范围 / EXISTS），以提升索引利用率";
+                } else if ("not in".equalsIgnoreCase(matched)) {
+                        prefix = "-- 示例：将 NOT IN 评估为 NOT EXISTS 或 LEFT JOIN ... IS NULL（按执行计划选择）";
+                } else {
+                        prefix = "-- 示例：将 `!=`/`<>` 改写为更易利用索引的正向条件（需按业务确认）";
+                }
+                return prefix + "\n" + ensureSemicolon(sql);
+        }
+
+        private String rewriteInListSize(String sql) {
+                return "-- 示例方案：\n"
+                                + "-- 1) 分批执行，每批 IN 列表 <= 100\n"
+                                + "-- 2) 将参数写入临时表后 JOIN\n"
+                                + "-- 3) 按驱动支持情况改为 = ANY(?)\n"
+                                + ensureSemicolon(sql);
+        }
+
+        private String rewriteCountUsage(String sql) {
+                return "-- 若仅判断是否存在，示例可改为：\n"
+                                + "SELECT 1\nFROM /* TODO: table */\nWHERE /* TODO: conditions */\nLIMIT 1;\n"
+                                + "\n-- 若必须精确计数，请保留 count() 并优化过滤条件/索引\n"
+                                + ensureSemicolon(sql);
+        }
+
+        private String rewriteWhereFunction(String sql, String matchedText) {
+                return "-- 示例：避免在 WHERE 左侧列上使用函数（需按业务改写）\n"
+                                + "-- 原命中片段: " + sanitizeInlineComment(matchedText) + "\n"
+                                + ensureSemicolon(sql)
+                                + "\n-- 例如：DATE(create_time) = ?  改为  create_time >= ? AND create_time < ?";
+        }
+
+        private String rewriteSubqueryTarget(String sql) {
+                return "-- 示例：将 SELECT 列子查询改成预聚合 + JOIN\n"
+                                + "WITH agg AS (\n"
+                                + "  SELECT key_col, /* TODO: 聚合列 */\n"
+                                + "  FROM child_table\n"
+                                + "  GROUP BY key_col\n"
+                                + ")\n"
+                                + "SELECT m./* TODO */, a./* TODO */\n"
+                                + "FROM main_table m\n"
+                                + "LEFT JOIN agg a ON a.key_col = m.id;";
+        }
+
+        private String rewriteSubqueryDepth(String sql) {
+                return "-- 示例：用 CTE 拆分多层子查询，降低嵌套深度\n"
+                                + "WITH step1 AS (\n  /* TODO */\n),\n"
+                                + "step2 AS (\n  SELECT * FROM step1 /* TODO */\n)\n"
+                                + "SELECT * FROM step2;\n\n-- 原 SQL\n"
+                                + ensureSemicolon(sql);
+        }
+
+        private String rewriteJoinTableCount(String sql) {
+                return "-- 示例：将超长联表拆成分步查询（CTE/临时表）\n"
+                                + "WITH base AS (\n"
+                                + "  SELECT /* TODO: 核心字段 */\n"
+                                + "  FROM /* TODO: 核心表 */\n"
+                                + "  WHERE /* TODO: 先过滤 */\n"
+                                + ")\n"
+                                + "SELECT /* TODO */\nFROM base\nJOIN /* 其他表 */ ON /* TODO */;\n\n-- 原 SQL\n"
+                                + ensureSemicolon(sql);
+        }
+
+        private String buildGenericExampleSql(SqlFragment fragment, CheckResult result) {
+                String sql = fragment.getSqlText();
+                if (sql == null || sql.isBlank()) {
+                        return null;
+                }
+                return "-- 示例改写（请结合业务语义人工确认）\n"
+                                + "-- 当前命中: " + sanitizeInlineComment(result == null ? null : result.matchedText()) + "\n"
+                                + ensureSemicolon(sql);
+        }
+
+        private String sanitizeInlineComment(String text) {
+                if (text == null || text.isBlank()) {
+                        return "N/A";
+                }
+                return text.replace('\n', ' ').replace('\r', ' ').trim();
+        }
+
+        private String stripTrailingSemicolon(String sql) {
+                return TRAILING_SEMICOLON.matcher(sql.trim()).replaceFirst("");
+        }
+
+        private String ensureSemicolon(String sql) {
+                if (sql == null || sql.isBlank()) {
+                        return sql;
+                }
+                String trimmed = sql.trim();
+                return trimmed.endsWith(";") ? trimmed : trimmed + ";";
+        }
+
+        private List<String> extractTablesFromImplicitJoin(String matchedText) {
+                if (matchedText == null || matchedText.isBlank()) {
+                        return List.of();
+                }
+                String lower = matchedText.toLowerCase(Locale.ROOT);
+                int fromIndex = lower.indexOf("from");
+                if (fromIndex < 0) {
+                        return List.of();
+                }
+                String fromClause = matchedText.substring(fromIndex + 4).trim();
+                String[] parts = fromClause.split(",");
+                List<String> tables = new ArrayList<>();
+                for (String part : parts) {
+                        String table = part.trim();
+                        if (table.isBlank()) {
+                                continue;
+                        }
+                        String firstToken = table.split("\\s+")[0];
+                        if (!firstToken.isBlank()) {
+                                tables.add(firstToken);
+                        }
+                }
+                return tables;
+        }
+
+        private String guessFkColumn(String parentTable) {
+                String base = parentTable;
+                int dot = base.lastIndexOf('.');
+                if (dot >= 0 && dot + 1 < base.length()) {
+                        base = base.substring(dot + 1);
+                }
+                return base + "_id";
         }
 
         /**

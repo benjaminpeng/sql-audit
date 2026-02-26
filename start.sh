@@ -99,6 +99,15 @@ parse_maven_java_major() {
     }' <<<"$out"
 }
 
+prepend_path_once() {
+  local dir="$1"
+  [ -n "$dir" ] || return 0
+  case ":$PATH:" in
+    *":$dir:"*) ;;
+    *) export PATH="$dir:$PATH" ;;
+  esac
+}
+
 configure_java_home() {
   if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
     return 0
@@ -113,6 +122,44 @@ configure_java_home() {
     if [ -n "$mac_java_home" ] && [ -x "$mac_java_home/bin/java" ]; then
       export JAVA_HOME="$mac_java_home"
       return 0
+    fi
+  fi
+
+  if [ "$os_name" = "Darwin" ]; then
+    local mac_candidates=(
+      /opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+      /opt/homebrew/opt/openjdk@21
+      /opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home
+      /opt/homebrew/opt/openjdk
+      /usr/local/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+      /usr/local/opt/openjdk@21
+      /usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home
+      /usr/local/opt/openjdk
+    )
+    local mc
+    for mc in "${mac_candidates[@]}"; do
+      if [ -x "$mc/bin/java" ]; then
+        export JAVA_HOME="$mc"
+        return 0
+      fi
+    done
+
+    if have_cmd brew; then
+      local brew_openjdk_home
+      brew_openjdk_home="$(brew --prefix openjdk@21 2>/dev/null || true)"
+      if [ -n "$brew_openjdk_home" ]; then
+        local brew_candidates=(
+          "$brew_openjdk_home/libexec/openjdk.jdk/Contents/Home"
+          "$brew_openjdk_home"
+        )
+        local bc
+        for bc in "${brew_candidates[@]}"; do
+          if [ -x "$bc/bin/java" ]; then
+            export JAVA_HOME="$bc"
+            return 0
+          fi
+        done
+      fi
     fi
   fi
 
@@ -137,20 +184,46 @@ configure_java_home() {
     if [ -n "$java_bin_real" ]; then
       local inferred
       inferred="$(cd -- "$(dirname -- "$java_bin_real")/.." && pwd -P)"
-      if [ -x "$inferred/bin/java" ]; then
+      if [ -x "$inferred/bin/java" ] && [ "$inferred" != "/usr" ]; then
         export JAVA_HOME="$inferred"
       fi
     fi
   fi
 }
 
-preflight_checks() {
-  info "Running environment checks..."
-  ensure_cmds java mvn node npm
+resolve_java_cmd() {
   configure_java_home
 
-  local java_out java_major node_major maven_out maven_java_major
-  java_out="$(java -version 2>&1 || true)"
+  if [ -n "${JAVA_HOME:-}" ] && [ -x "${JAVA_HOME}/bin/java" ]; then
+    prepend_path_once "$JAVA_HOME/bin"
+    printf '%s\n' "${JAVA_HOME}/bin/java"
+    return 0
+  fi
+
+  if have_cmd java; then
+    local java_path os_name
+    java_path="$(command -v java)"
+    os_name="$(uname -s)"
+    if [ "$os_name" = "Darwin" ] && [ "$java_path" = "/usr/bin/java" ]; then
+      die "Detected macOS system java stub (/usr/bin/java). Set JAVA_HOME to a real JDK 21 (for example /opt/homebrew/opt/openjdk@21) and rerun."
+    fi
+    printf '%s\n' "$java_path"
+    return 0
+  fi
+
+  die "Java 21+ not found. Install JDK 21 and set JAVA_HOME."
+}
+
+preflight_checks() {
+  info "Running environment checks..."
+  ensure_cmds mvn node npm
+
+  local java_cmd java_out java_major node_major maven_out maven_java_major
+  java_cmd="$(resolve_java_cmd)"
+
+  if ! java_out="$("$java_cmd" -version 2>&1)"; then
+    die "Failed to run java version check using $java_cmd"
+  fi
   java_major="$(parse_java_major "$java_out")"
   [ -n "${java_major:-}" ] || die "Unable to parse Java version. Output: $java_out"
   if [ "$java_major" -lt 21 ]; then
