@@ -78,6 +78,20 @@ ensure_cmds() {
   fi
 }
 
+resolve_node_cmd() {
+  if have_cmd node; then
+    printf '%s\n' "$(command -v node)"
+    return 0
+  fi
+
+  if have_cmd nodejs; then
+    printf '%s\n' "$(command -v nodejs)"
+    return 0
+  fi
+
+  die "Node.js not found. Install Node.js 18+ and ensure either 'node' or 'nodejs' is in PATH."
+}
+
 parse_java_major() {
   local out="$1"
   awk -F '[\".]' '
@@ -216,10 +230,11 @@ resolve_java_cmd() {
 
 preflight_checks() {
   info "Running environment checks..."
-  ensure_cmds mvn node npm
+  ensure_cmds mvn npm
 
-  local java_cmd java_out java_major node_major maven_out maven_java_major
+  local java_cmd node_cmd java_out java_major node_major maven_out maven_java_major
   java_cmd="$(resolve_java_cmd)"
+  node_cmd="$(resolve_node_cmd)"
 
   if ! java_out="$("$java_cmd" -version 2>&1)"; then
     die "Failed to run java version check using $java_cmd"
@@ -230,7 +245,7 @@ preflight_checks() {
     die "Java 21+ is required, but current java is $java_major."
   fi
 
-  node_major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
+  node_major="$("$node_cmd" -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
   [ -n "${node_major:-}" ] || die "Unable to parse Node.js version."
   if [ "$node_major" -lt 18 ]; then
     die "Node.js 18+ is required, but current node is $node_major."
