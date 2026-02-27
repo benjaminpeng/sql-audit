@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                              https://maven.apache.org/xsd/settings-1.0.0.xsd">
+
+  <!--
+    Corporate Maven settings template
+    1) Replace mirror URL with your company's URL
+    2) Keep mirror id and server id consistent (corp-mirror)
+    3) Set credentials via env vars:
+       export CORP_MAVEN_USER=...
+       export CORP_MAVEN_PASS=...
+  -->
+
+  <mirrors>
+    <mirror>
+      <id>corp-mirror</id>
+      <name>Corporate Maven Mirror</name>
+      <url>https://maven.company.local/repository/maven-public/</url>
+      <mirrorOf>*</mirrorOf>
+    </mirror>
+  </mirrors>
+
+  <servers>
+    <server>
+      <id>corp-mirror</id>
+      <username>${env.CORP_MAVEN_USER}</username>
+      <password>${env.CORP_MAVEN_PASS}</password>
+    </server>
+  </servers>
+
+  <profiles>
+    <profile>
+      <id>corp-repos</id>
+      <repositories>
+        <repository>
+          <id>central</id>
+          <name>Central (via corp mirror)</name>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>true</enabled></snapshots>
+        </repository>
+      </repositories>
+      <pluginRepositories>
+        <pluginRepository>
+          <id>central</id>
+          <name>Central Plugins (via corp mirror)</name>
+          <url>https://repo.maven.apache.org/maven2</url>
+          <releases><enabled>true</enabled></releases>
+          <snapshots><enabled>true</enabled></snapshots>
+        </pluginRepository>
+      </pluginRepositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>corp-repos</activeProfile>
+  </activeProfiles>
+
+  <!-- Optional proxy (uncomment if needed)
+  <proxies>
+    <proxy>
+      <id>corp-proxy</id>
+      <active>true</active>
+      <protocol>http</protocol>
+      <host>proxy.company.local</host>
+      <port>8080</port>
+      <nonProxyHosts>localhost|127.0.0.1|*.company.local</nonProxyHosts>
+    </proxy>
+  </proxies>
+  -->
+</settings>

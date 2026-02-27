@@ -1,0 +1,16 @@
+# Corporate npm config template
+# 1) Replace registry URL with your company's URL
+# 2) Export NPM_TOKEN before use:
+#    export NPM_TOKEN=...
+# 3) Copy to ~/.npmrc
+
+registry=https://npm.company.local/repository/npm-group/
+always-auth=true
+strict-ssl=true
+
+# Auth token format must match the registry host/path above:
+//npm.company.local/repository/npm-group/:_authToken=${NPM_TOKEN}
+
+# Optional proxy (uncomment if needed)
+# proxy=http://proxy.company.local:8080
+# https-proxy=http://proxy.company.local:8080

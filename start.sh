@@ -13,6 +13,8 @@ BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 NODE_CMD=""
 NPM_CMD=""
+MAVEN_CMD=()
+MAVEN_SETTINGS_FILE_RESOLVED=""
 
 mkdir -p "$RUN_DIR"
 
@@ -77,6 +79,24 @@ ensure_cmds() {
   done
   if [ "${#missing[@]}" -gt 0 ]; then
     die "Missing required commands: ${missing[*]}"
+  fi
+}
+
+resolve_maven_cmd() {
+  ensure_cmds mvn
+  MAVEN_CMD=(mvn)
+
+  local settings_file="${MAVEN_SETTINGS_FILE:-}"
+  if [ -z "$settings_file" ] && [ -n "${MAVEN_SETTINGS:-}" ]; then
+    settings_file="${MAVEN_SETTINGS}"
+  fi
+
+  if [ -n "$settings_file" ]; then
+    if [ ! -f "$settings_file" ]; then
+      die "Maven settings file not found: $settings_file"
+    fi
+    MAVEN_CMD+=(-s "$settings_file")
+    MAVEN_SETTINGS_FILE_RESOLVED="$settings_file"
   fi
 }
 
@@ -289,7 +309,7 @@ resolve_java_cmd() {
 
 preflight_checks() {
   info "Running environment checks..."
-  ensure_cmds mvn
+  resolve_maven_cmd
 
   local java_cmd java_out java_major node_major maven_out maven_java_major
   java_cmd="$(resolve_java_cmd)"
@@ -311,7 +331,7 @@ preflight_checks() {
     die "Node.js 18+ is required, but current node is $node_major."
   fi
 
-  maven_out="$(mvn -v 2>&1 || true)"
+  maven_out="$("${MAVEN_CMD[@]}" -v 2>&1 || true)"
   maven_java_major="$(parse_maven_java_major "$maven_out")"
   if [ -n "${maven_java_major:-}" ] && [ "$maven_java_major" -lt 21 ]; then
     die "Maven is using Java $maven_java_major, but Java 21+ is required. Check JAVA_HOME."
@@ -322,6 +342,9 @@ preflight_checks() {
   info "Maven: OK"
   if [ -n "${JAVA_HOME:-}" ]; then
     info "JAVA_HOME=$JAVA_HOME"
+  fi
+  if [ -n "$MAVEN_SETTINGS_FILE_RESOLVED" ]; then
+    info "Maven settings file: $MAVEN_SETTINGS_FILE_RESOLVED"
   fi
 }
 
@@ -432,7 +455,7 @@ start_backend() {
   info "Starting SQL Audit Backend..."
   (
     cd "$BACKEND_DIR"
-    nohup mvn spring-boot:run >"$BACKEND_LOG" 2>&1 &
+    nohup "${MAVEN_CMD[@]}" spring-boot:run >"$BACKEND_LOG" 2>&1 &
     echo $! >"$BACKEND_PID_FILE"
   )
   info "Backend PID: $(cat "$BACKEND_PID_FILE")"
