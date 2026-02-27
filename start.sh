@@ -11,6 +11,8 @@ BACKEND_LOG="$BACKEND_DIR/backend.log"
 FRONTEND_LOG="$FRONTEND_DIR/frontend.log"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+BACKEND_CONFIG_FILE="$BACKEND_DIR/src/main/resources/application.yml"
+BACKEND_PORT=""
 
 mkdir -p "$RUN_DIR"
 
@@ -77,6 +79,41 @@ ensure_cmds() {
     die "Missing required commands: ${missing[*]}"
   fi
 }
+
+resolve_node_cmd() {
+  if have_cmd node; then
+    printf '%s\n' "$(command -v node)"
+    return 0
+  fi
+
+  if have_cmd nodejs; then
+    printf '%s\n' "$(command -v nodejs)"
+    return 0
+  fi
+
+  if detect_wsl; then
+    if have_cmd node.exe; then
+      printf '%s\n' "$(command -v node.exe)"
+      return 0
+    fi
+
+    local win_node_candidates=(
+      "/mnt/c/Program Files/nodejs"
+      "/mnt/c/Program Files (x86)/nodejs"
+    )
+    local wnd
+    for wnd in "${win_node_candidates[@]}"; do
+      if [ -x "$wnd/node.exe" ]; then
+        prepend_path_once "$wnd"
+        printf '%s\n' "$wnd/node.exe"
+        return 0
+      fi
+    done
+  fi
+
+  die "Node.js not found. Install Node.js 18+ (or ensure node/nodejs is in PATH). On WSL, you can also install Node in Windows and expose node.exe to WSL PATH."
+}
+
 
 parse_java_major() {
   local out="$1"
@@ -216,10 +253,11 @@ resolve_java_cmd() {
 
 preflight_checks() {
   info "Running environment checks..."
-  ensure_cmds mvn node npm
+  ensure_cmds mvn npm
 
-  local java_cmd java_out java_major node_major maven_out maven_java_major
+  local java_cmd node_cmd java_out java_major node_major maven_out maven_java_major
   java_cmd="$(resolve_java_cmd)"
+  node_cmd="$(resolve_node_cmd)"
 
   if ! java_out="$("$java_cmd" -version 2>&1)"; then
     die "Failed to run java version check using $java_cmd"
@@ -230,7 +268,7 @@ preflight_checks() {
     die "Java 21+ is required, but current java is $java_major."
   fi
 
-  node_major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
+  node_major="$("$node_cmd" -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
   [ -n "${node_major:-}" ] || die "Unable to parse Node.js version."
   if [ "$node_major" -lt 18 ]; then
     die "Node.js 18+ is required, but current node is $node_major."
@@ -250,10 +288,60 @@ preflight_checks() {
   fi
 }
 
-ensure_frontend_deps() {
+resolve_backend_port() {
+  local fallback_port="8090"
+  if [ ! -f "$BACKEND_CONFIG_FILE" ]; then
+    printf '%s\n' "$fallback_port"
+    return 0
+  fi
+
+  local parsed
+  parsed="$(awk '
+    BEGIN { in_server = 0 }
+    /^[[:space:]]*server:[[:space:]]*$/ { in_server = 1; next }
+    in_server && /^[^[:space:]]/ { in_server = 0 }
+    in_server && /^[[:space:]]*port:[[:space:]]*[0-9]+[[:space:]]*$/ {
+      gsub(/[^0-9]/, "", $0)
+      print $0
+      exit
+    }
+  ' "$BACKEND_CONFIG_FILE")"
+
+  if [ -n "${parsed:-}" ]; then
+    printf '%s\n' "$parsed"
+  else
+    printf '%s\n' "$fallback_port"
+  fi
+}
+
+frontend_deps_healthy() {
   if [ ! -d "$FRONTEND_DIR/node_modules" ] || [ ! -x "$FRONTEND_DIR/node_modules/.bin/vite" ]; then
-    info "Installing frontend dependencies (npm install)..."
-    (cd "$FRONTEND_DIR" && npm install)
+    return 1
+  fi
+
+  local node_cmd
+  node_cmd="$(resolve_node_cmd)"
+  (
+    cd "$FRONTEND_DIR"
+    "$node_cmd" -e "require('rollup')" >/dev/null 2>&1
+  )
+}
+
+ensure_frontend_deps() {
+  if frontend_deps_healthy; then
+    return 0
+  fi
+
+  warn "Frontend dependencies are missing or inconsistent (common npm optional-deps issue on WSL)."
+  info "Reinstalling frontend dependencies (npm install --include=optional)..."
+  (
+    cd "$FRONTEND_DIR"
+    rm -rf node_modules
+    npm install --include=optional
+  )
+
+  if ! frontend_deps_healthy; then
+    die "Frontend dependencies are still unhealthy after reinstall. Try deleting frontend/package-lock.json and rerun start.sh."
   fi
 }
 
@@ -344,17 +432,18 @@ start_frontend() {
 
 main() {
   preflight_checks
+  BACKEND_PORT="$(resolve_backend_port)"
   ensure_frontend_deps
   print_wsl_notes
 
   info "Stopping existing services..."
   kill_pidfile "$BACKEND_PID_FILE" "backend"
   kill_pidfile "$FRONTEND_PID_FILE" "frontend"
-  cleanup_port 8080
+  cleanup_port "$BACKEND_PORT"
   cleanup_port 5174
 
   start_backend
-  if ! wait_for_http "http://127.0.0.1:8080/api/rules" "backend" "$BACKEND_PID_FILE" 180; then
+  if ! wait_for_http "http://127.0.0.1:${BACKEND_PORT}/api/rules" "backend" "$BACKEND_PID_FILE" 180; then
     show_recent_logs "$BACKEND_LOG" "backend"
     exit 1
   fi
@@ -368,7 +457,7 @@ main() {
   info "=================================================="
   info "Project is running"
   info "Frontend: http://localhost:5174"
-  info "Backend:  http://localhost:8080"
+  info "Backend:  http://localhost:${BACKEND_PORT}"
   info "Logs:"
   info "  - $BACKEND_LOG"
   info "  - $FRONTEND_LOG"
