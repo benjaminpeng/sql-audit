@@ -386,11 +386,11 @@ main() {
   info "Stopping existing services..."
   kill_pidfile "$BACKEND_PID_FILE" "backend"
   kill_pidfile "$FRONTEND_PID_FILE" "frontend"
-  cleanup_port 8080
+  cleanup_port 8081
   cleanup_port 5174
 
   start_backend
-  if ! wait_for_http "http://127.0.0.1:8080/api/rules" "backend" "$BACKEND_PID_FILE" 180; then
+  if ! wait_for_http "http://127.0.0.1:8081/api/rules" "backend" "$BACKEND_PID_FILE" 180; then
     show_recent_logs "$BACKEND_LOG" "backend"
     exit 1
   fi
@@ -404,7 +404,7 @@ main() {
   info "=================================================="
   info "Project is running"
   info "Frontend: http://localhost:5174"
-  info "Backend:  http://localhost:8080"
+  info "Backend:  http://localhost:8081"
   info "Logs:"
   info "  - $BACKEND_LOG"
   info "  - $FRONTEND_LOG"
