@@ -78,6 +78,41 @@ ensure_cmds() {
   fi
 }
 
+resolve_node_cmd() {
+  if have_cmd node; then
+    printf '%s\n' "$(command -v node)"
+    return 0
+  fi
+
+  if have_cmd nodejs; then
+    printf '%s\n' "$(command -v nodejs)"
+    return 0
+  fi
+
+  if detect_wsl; then
+    if have_cmd node.exe; then
+      printf '%s\n' "$(command -v node.exe)"
+      return 0
+    fi
+
+    local win_node_candidates=(
+      "/mnt/c/Program Files/nodejs"
+      "/mnt/c/Program Files (x86)/nodejs"
+    )
+    local wnd
+    for wnd in "${win_node_candidates[@]}"; do
+      if [ -x "$wnd/node.exe" ]; then
+        prepend_path_once "$wnd"
+        printf '%s\n' "$wnd/node.exe"
+        return 0
+      fi
+    done
+  fi
+
+  die "Node.js not found. Install Node.js 18+ (or ensure node/nodejs is in PATH). On WSL, you can also install Node in Windows and expose node.exe to WSL PATH."
+}
+
+
 parse_java_major() {
   local out="$1"
   awk -F '[\".]' '
@@ -216,10 +251,11 @@ resolve_java_cmd() {
 
 preflight_checks() {
   info "Running environment checks..."
-  ensure_cmds mvn node npm
+  ensure_cmds mvn npm
 
-  local java_cmd java_out java_major node_major maven_out maven_java_major
+  local java_cmd node_cmd java_out java_major node_major maven_out maven_java_major
   java_cmd="$(resolve_java_cmd)"
+  node_cmd="$(resolve_node_cmd)"
 
   if ! java_out="$("$java_cmd" -version 2>&1)"; then
     die "Failed to run java version check using $java_cmd"
@@ -230,7 +266,7 @@ preflight_checks() {
     die "Java 21+ is required, but current java is $java_major."
   fi
 
-  node_major="$(node -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
+  node_major="$("$node_cmd" -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
   [ -n "${node_major:-}" ] || die "Unable to parse Node.js version."
   if [ "$node_major" -lt 18 ]; then
     die "Node.js 18+ is required, but current node is $node_major."
@@ -350,11 +386,11 @@ main() {
   info "Stopping existing services..."
   kill_pidfile "$BACKEND_PID_FILE" "backend"
   kill_pidfile "$FRONTEND_PID_FILE" "frontend"
-  cleanup_port 8080
+  cleanup_port 8081
   cleanup_port 5174
 
   start_backend
-  if ! wait_for_http "http://127.0.0.1:8080/api/rules" "backend" "$BACKEND_PID_FILE" 180; then
+  if ! wait_for_http "http://127.0.0.1:8081/api/rules" "backend" "$BACKEND_PID_FILE" 180; then
     show_recent_logs "$BACKEND_LOG" "backend"
     exit 1
   fi
@@ -368,7 +404,7 @@ main() {
   info "=================================================="
   info "Project is running"
   info "Frontend: http://localhost:5174"
-  info "Backend:  http://localhost:8080"
+  info "Backend:  http://localhost:8081"
   info "Logs:"
   info "  - $BACKEND_LOG"
   info "  - $FRONTEND_LOG"

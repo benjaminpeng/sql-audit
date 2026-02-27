@@ -43,7 +43,7 @@ bash ./start.sh
 ```
 
 This will:
-1. Kill any existing processes on ports 8080 and 5174.
+1. Kill any existing processes on ports 8081 and 5174.
 2. Validate Java / Maven / Node.js versions (Java 21+, Node 18+).
 3. Auto-install frontend dependencies on first run (`npm install`).
 4. Build and start the Spring Boot backend.
@@ -124,8 +124,8 @@ npm run dev -- --port 5174
 
 ### ❓ Troubleshooting
 
-- **Port 8080 in use?** — Run `./start.sh` (auto-kills), or `lsof -ti:8080 | xargs kill -9`.
-- **Frontend can't connect?** — Verify backend at `http://localhost:8080/api/rules`.
+- **Port 8081 in use?** — Run `./start.sh` (auto-kills), or `lsof -ti:8081 | xargs kill -9`.
+- **Frontend can't connect?** — Verify backend at `http://localhost:8081/api/rules`.
 - **"invalid source release: 21"?** — Ensure JDK 21 is installed and `JAVA_HOME` is set.
 
 ---
@@ -169,7 +169,7 @@ bash ./start.sh
 ```
 
 脚本会自动：
-1. 终止 8080 和 5174 端口的已有进程。
+1. 终止 8081 和 5174 端口的已有进程。
 2. 检查 Java / Maven / Node.js 版本（要求 Java 21+、Node 18+）。
 3. 首次运行自动安装前端依赖（`npm install`）。
 4. 编译并启动 Spring Boot 后端。
@@ -250,8 +250,8 @@ npm run dev -- --port 5174
 
 ### ❓ 常见问题
 
-- **端口 8080 被占用？** — 运行 `./start.sh`（自动终止），或 `lsof -ti:8080 | xargs kill -9`。
-- **前端无法连接后端？** — 确认后端已启动：`http://localhost:8080/api/rules`。
+- **端口 8081 被占用？** — 运行 `./start.sh`（自动终止），或 `lsof -ti:8081 | xargs kill -9`。
+- **前端无法连接后端？** — 确认后端已启动：`http://localhost:8081/api/rules`。
 - **编译报 "invalid source release: 21"？** — 确保已安装 JDK 21 并正确设置 `JAVA_HOME`。
 
 ---
