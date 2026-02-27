@@ -89,8 +89,29 @@ resolve_node_cmd() {
     return 0
   fi
 
-  die "Node.js not found. Install Node.js 18+ and ensure either 'node' or 'nodejs' is in PATH."
+  if detect_wsl; then
+    if have_cmd node.exe; then
+      printf '%s\n' "$(command -v node.exe)"
+      return 0
+    fi
+
+    local win_node_candidates=(
+      "/mnt/c/Program Files/nodejs"
+      "/mnt/c/Program Files (x86)/nodejs"
+    )
+    local wnd
+    for wnd in "${win_node_candidates[@]}"; do
+      if [ -x "$wnd/node.exe" ]; then
+        prepend_path_once "$wnd"
+        printf '%s\n' "$wnd/node.exe"
+        return 0
+      fi
+    done
+  fi
+
+  die "Node.js not found. Install Node.js 18+ (or ensure node/nodejs is in PATH). On WSL, you can also install Node in Windows and expose node.exe to WSL PATH."
 }
+
 
 parse_java_major() {
   local out="$1"
