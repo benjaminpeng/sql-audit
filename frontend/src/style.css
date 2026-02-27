@@ -745,6 +745,7 @@ body::after {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--s-sm);
     margin-bottom: var(--s-lg);
 }
 
@@ -760,13 +761,35 @@ body::after {
 .results-meta {
     display: flex;
     align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
     gap: var(--s-md);
+}
+
+.results-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--s-sm);
 }
 
 .results-time {
     font-size: 0.72rem;
     color: var(--text-muted);
     font-family: var(--font-mono);
+}
+
+@media (max-width: 780px) {
+    .results-header {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .results-meta {
+        width: 100%;
+        justify-content: space-between;
+        gap: var(--s-sm);
+    }
 }
 
 /* Filter pills */

@@ -313,8 +313,11 @@ function renderResults() {
                     <div class="results-title">📊 审查结果</div>
                     <div class="results-meta">
                         <span class="results-time">${report.scanTime || ''}</span>
-                        <button class="btn btn-sm btn-ghost" id="exportMarkdownBtn">📄 导出 MD</button>
-                        <button class="btn btn-sm btn-ghost" id="clearResultsBtn">🗑️ 清除</button>
+                        <div class="results-actions">
+                            <button class="btn btn-sm btn-ghost" id="exportMarkdownBtn">📄 导出 Markdown</button>
+                            <button class="btn btn-sm btn-ghost" id="exportJsonBtn">🧾 导出 JSON</button>
+                            <button class="btn btn-sm btn-ghost" id="clearResultsBtn">🗑️ 清除</button>
+                        </div>
                     </div>
                 </div>
 
@@ -691,6 +694,12 @@ function bindEvents() {
         exportMarkdownBtn.addEventListener('click', handleExportMarkdown);
     }
 
+    // Export JSON button
+    const exportJsonBtn = document.getElementById('exportJsonBtn');
+    if (exportJsonBtn) {
+        exportJsonBtn.addEventListener('click', handleExportJson);
+    }
+
     // SQL file upload
     const sqlUploadZone = document.getElementById('sqlUploadZone');
     const sqlFileInput = document.getElementById('sqlFileInput');
@@ -783,13 +792,30 @@ function handleClearResults() {
     showToast('扫描结果已清除');
 }
 
-function handleExportMarkdown() {
-    const report = state.scanReport;
-    if (!report) return;
+function downloadFile(content, filename, mimeType) {
+    const blob = new Blob([content], { type: mimeType });
 
+    // Legacy IE/Edge compatibility (some corporate environments still use it)
+    if (typeof navigator.msSaveOrOpenBlob === 'function') {
+        navigator.msSaveOrOpenBlob(blob, filename);
+        return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function buildMarkdownReport(report) {
     let md = `# SQL 审计规范审查报告\n\n`;
     md += `**扫描时间:** ${report.scanTime || new Date().toLocaleString()}\n`;
-    md += `**扫描范围:** \`${report.repoPath}\`\n\n`;
+    md += `**扫描范围:** \`${report.repoPath || 'SQL 脚本上传模式'}\`\n\n`;
 
     if (report.limitReached) {
         md += `> ⚠️ **警告：扫描结果被截断**\n`;
@@ -803,55 +829,79 @@ function handleExportMarkdown() {
 
     if (report.totalViolations === 0) {
         md += `✅ **恭喜！所有 SQL 语句均符合规范**\n`;
-    } else {
-        md += `## 🚫 违规详情\n\n`;
+        return md;
+    }
 
-        // Group by file
-        const grouped = {};
-        report.violations.forEach(v => {
-            const path = v.sqlFragment.relativePath;
-            if (!grouped[path]) grouped[path] = [];
-            grouped[path].push(v);
-        });
+    md += `## 🚫 违规详情\n\n`;
 
-        for (const [path, violations] of Object.entries(grouped)) {
-            md += `### 📄 \`${path}\` (${violations.length} 项)\n\n`;
-            violations.forEach(v => {
-                md += `**[${v.rule.severity}]** ${v.rule.section ? '§' + v.rule.section + ' ' : ''}${v.rule.name}\n`;
-                md += `- **位置:** 行 ${v.sqlFragment.lineNumber} (${v.sqlFragment.statementType.toUpperCase()} #${v.sqlFragment.statementId})\n`;
-                md += `- **说明:** ${v.message}\n`;
-                if (v.suggestion) {
-                    md += `- **修复建议:** ${v.suggestion}\n`;
-                }
-                if (v.exampleSql) {
-                    md += `- **示例改写 SQL（需人工确认）:**\n\n`;
-                    md += `\`\`\`sql\n${v.exampleSql}\n\`\`\`\n`;
-                }
-                if (v.matchedText) {
-                    md += `- **匹配内容:** \`${v.matchedText.replace(/\\n/g, ' ')}\`\n`;
-                }
-                md += `\n`;
-            });
-        }
+    // Group by file
+    const grouped = {};
+    report.violations.forEach(v => {
+        const path = v.sqlFragment.relativePath;
+        if (!grouped[path]) grouped[path] = [];
+        grouped[path].push(v);
+    });
 
-        md += `## 📁 扫描文件列表\n\n`;
-        report.scannedFiles.forEach(f => {
-            md += `- \`${f}\`\n`;
+    for (const [path, violations] of Object.entries(grouped)) {
+        md += `### 📄 \`${path}\` (${violations.length} 项)\n\n`;
+        violations.forEach(v => {
+            md += `**[${v.rule.severity}]** ${v.rule.section ? '§' + v.rule.section + ' ' : ''}${v.rule.name}\n`;
+            md += `- **位置:** 行 ${v.sqlFragment.lineNumber} (${v.sqlFragment.statementType.toUpperCase()} #${v.sqlFragment.statementId})\n`;
+            md += `- **说明:** ${v.message}\n`;
+            if (v.suggestion) {
+                md += `- **修复建议:** ${v.suggestion}\n`;
+            }
+            if (v.exampleSql) {
+                md += `- **示例改写 SQL（需人工确认）:**\n\n`;
+                md += `\`\`\`sql\n${v.exampleSql}\n\`\`\`\n`;
+            }
+            if (v.matchedText) {
+                md += `- **匹配内容:** \`${v.matchedText.replace(/\\n/g, ' ')}\`\n`;
+            }
+            md += `\n`;
         });
     }
 
-    // Download blob
-    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `sql-audit-report-${Date.now()}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    md += `## 📁 扫描文件列表\n\n`;
+    report.scannedFiles.forEach(f => {
+        md += `- \`${f}\`\n`;
+    });
 
-    showToast('Markdown 报告导出成功');
+    return md;
+}
+
+function handleExportMarkdown() {
+    const report = state.scanReport;
+    if (!report) {
+        showToast('暂无可导出的审查结果', 'error');
+        return;
+    }
+
+    try {
+        const md = buildMarkdownReport(report);
+        downloadFile(md, `sql-audit-report-${Date.now()}.md`, 'text/markdown;charset=utf-8');
+        showToast('Markdown 报告导出成功');
+    } catch (err) {
+        console.error('导出 Markdown 失败', err);
+        showToast('导出失败，请稍后重试', 'error');
+    }
+}
+
+function handleExportJson() {
+    const report = state.scanReport;
+    if (!report) {
+        showToast('暂无可导出的审查结果', 'error');
+        return;
+    }
+
+    try {
+        const json = JSON.stringify(report, null, 2);
+        downloadFile(json, `sql-audit-report-${Date.now()}.json`, 'application/json;charset=utf-8');
+        showToast('JSON 报告导出成功');
+    } catch (err) {
+        console.error('导出 JSON 失败', err);
+        showToast('导出失败，请稍后重试', 'error');
+    }
 }
 
 async function handleSqlFileScan(file) {
