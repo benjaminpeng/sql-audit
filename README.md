@@ -69,6 +69,16 @@ npm run dev -- --port 5174
 #### WSL (Windows Subsystem for Linux) Notes
 
 - Prefer running via `bash ./start.sh` (more reliable than `./start.sh` when the repo is on `/mnt/c` and execute permissions are limited).
+- Use **Linux-native Node/npm** in WSL. Do not use Windows `node.exe` / `npm.cmd` from `/mnt/c/...` (this often causes install/build failures such as platform-mismatched `esbuild` binaries).
+- Quick install inside WSL (Ubuntu/Debian):
+  ```bash
+  sudo apt update
+  sudo apt install -y curl
+  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  source ~/.nvm/nvm.sh
+  nvm install --lts
+  node -v && npm -v
+  ```
 - In the UI, repository paths can be:
   - Linux paths like `/home/you/project`
   - WSL mount paths like `/mnt/c/Users/you/project`
@@ -195,6 +205,16 @@ npm run dev -- --port 5174
 #### WSL（Windows Subsystem for Linux）运行说明
 
 - 推荐使用 `bash ./start.sh` 启动（仓库放在 `/mnt/c` 时比 `./start.sh` 更稳，避免执行权限问题）。
+- 在 WSL 中请使用 **Linux 原生 Node/npm**，不要使用 Windows 的 `node.exe` / `npm.cmd`（常见后果是依赖安装失败或 `esbuild` 平台不匹配）。
+- WSL 内快速安装 Node（Ubuntu/Debian）：
+  ```bash
+  sudo apt update
+  sudo apt install -y curl
+  curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
+  source ~/.nvm/nvm.sh
+  nvm install --lts
+  node -v && npm -v
+  ```
 - 页面里的“仓库路径”支持：
   - Linux 路径：`/home/you/project`
   - WSL 挂载路径：`/mnt/c/Users/you/project`

@@ -11,6 +11,8 @@ BACKEND_LOG="$BACKEND_DIR/backend.log"
 FRONTEND_LOG="$FRONTEND_DIR/frontend.log"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
+NODE_CMD=""
+NPM_CMD=""
 
 mkdir -p "$RUN_DIR"
 
@@ -78,38 +80,74 @@ ensure_cmds() {
   fi
 }
 
-resolve_node_cmd() {
-  if have_cmd node; then
-    printf '%s\n' "$(command -v node)"
-    return 0
-  fi
-
-  if have_cmd nodejs; then
-    printf '%s\n' "$(command -v nodejs)"
-    return 0
-  fi
-
-  if detect_wsl; then
-    if have_cmd node.exe; then
-      printf '%s\n' "$(command -v node.exe)"
+is_windows_host_command() {
+  local cmd_path="$1"
+  case "$cmd_path" in
+    /mnt/?/*|*.exe|*.cmd|*.bat)
       return 0
-    fi
+      ;;
+  esac
+  return 1
+}
 
-    local win_node_candidates=(
-      "/mnt/c/Program Files/nodejs"
-      "/mnt/c/Program Files (x86)/nodejs"
-    )
-    local wnd
-    for wnd in "${win_node_candidates[@]}"; do
-      if [ -x "$wnd/node.exe" ]; then
-        prepend_path_once "$wnd"
-        printf '%s\n' "$wnd/node.exe"
+find_nvm_bin_dir() {
+  local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+  local latest_bin
+  latest_bin="$(ls -1d "$nvm_dir"/versions/node/v*/bin 2>/dev/null | sort -V | tail -n 1 || true)"
+  if [ -n "$latest_bin" ] && [ -x "$latest_bin/node" ] && [ -x "$latest_bin/npm" ]; then
+    printf '%s\n' "$latest_bin"
+    return 0
+  fi
+  return 1
+}
+
+resolve_node_cmd() {
+  local node_path=""
+  if have_cmd node; then
+    node_path="$(command -v node)"
+  elif have_cmd nodejs; then
+    node_path="$(command -v nodejs)"
+  fi
+
+  if [ -n "$node_path" ]; then
+    if detect_wsl && is_windows_host_command "$node_path"; then
+      local nvm_bin
+      nvm_bin="$(find_nvm_bin_dir || true)"
+      if [ -n "$nvm_bin" ]; then
+        prepend_path_once "$nvm_bin"
+        printf '%s\n' "$nvm_bin/node"
         return 0
       fi
-    done
+      die "Detected Windows Node on WSL ($node_path). Install Node.js inside WSL (recommended: nvm install --lts) and make sure /usr/bin/node or ~/.nvm/.../node is first in PATH."
+    fi
+    printf '%s\n' "$node_path"
+    return 0
   fi
 
-  die "Node.js not found. Install Node.js 18+ (or ensure node/nodejs is in PATH). On WSL, you can also install Node in Windows and expose node.exe to WSL PATH."
+  die "Node.js not found. Install Node.js 18+ and ensure node/nodejs is in PATH."
+}
+
+resolve_npm_cmd() {
+  if ! have_cmd npm; then
+    if detect_wsl; then
+      die "npm not found. Install Node.js/npm inside WSL."
+    fi
+    die "npm not found. Install Node.js 18+ (including npm) and retry."
+  fi
+
+  local npm_path
+  npm_path="$(command -v npm)"
+  if detect_wsl && is_windows_host_command "$npm_path"; then
+    local nvm_bin
+    nvm_bin="$(find_nvm_bin_dir || true)"
+    if [ -n "$nvm_bin" ]; then
+      prepend_path_once "$nvm_bin"
+      printf '%s\n' "$nvm_bin/npm"
+      return 0
+    fi
+    die "Detected Windows npm on WSL ($npm_path). Install npm inside WSL (recommended: nvm install --lts), then retry."
+  fi
+  printf '%s\n' "$npm_path"
 }
 
 
@@ -251,11 +289,12 @@ resolve_java_cmd() {
 
 preflight_checks() {
   info "Running environment checks..."
-  ensure_cmds mvn npm
+  ensure_cmds mvn
 
-  local java_cmd node_cmd java_out java_major node_major maven_out maven_java_major
+  local java_cmd java_out java_major node_major maven_out maven_java_major
   java_cmd="$(resolve_java_cmd)"
-  node_cmd="$(resolve_node_cmd)"
+  NODE_CMD="$(resolve_node_cmd)"
+  NPM_CMD="$(resolve_npm_cmd)"
 
   if ! java_out="$("$java_cmd" -version 2>&1)"; then
     die "Failed to run java version check using $java_cmd"
@@ -266,7 +305,7 @@ preflight_checks() {
     die "Java 21+ is required, but current java is $java_major."
   fi
 
-  node_major="$("$node_cmd" -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
+  node_major="$("$NODE_CMD" -p "process.versions.node.split('.')[0]" 2>/dev/null || true)"
   [ -n "${node_major:-}" ] || die "Unable to parse Node.js version."
   if [ "$node_major" -lt 18 ]; then
     die "Node.js 18+ is required, but current node is $node_major."
@@ -287,10 +326,41 @@ preflight_checks() {
 }
 
 ensure_frontend_deps() {
+  local need_install=0
   if [ ! -d "$FRONTEND_DIR/node_modules" ] || [ ! -x "$FRONTEND_DIR/node_modules/.bin/vite" ]; then
-    info "Installing frontend dependencies (npm install)..."
-    (cd "$FRONTEND_DIR" && npm install)
+    need_install=1
+  elif ! (
+    cd "$FRONTEND_DIR"
+    "$NODE_CMD" -e "try { require('esbuild'); } catch (e) { process.exit(1); }" >/dev/null 2>&1
+  ); then
+    warn "Detected broken or cross-platform frontend dependencies; reinstalling node_modules..."
+    need_install=1
   fi
+
+  if [ "$need_install" -eq 0 ]; then
+    return 0
+  fi
+
+  info "Installing frontend dependencies..."
+  (
+    cd "$FRONTEND_DIR"
+    if [ -f package-lock.json ]; then
+      if ! "$NPM_CMD" ci --no-audit --no-fund; then
+        warn "npm ci failed; retrying with npm install..."
+        if ! "$NPM_CMD" install --no-audit --no-fund; then
+          warn "npm install failed; retrying with project-local npm cache..."
+          mkdir -p "$ROOT_DIR/.npm-cache"
+          "$NPM_CMD" install --cache "$ROOT_DIR/.npm-cache" --no-audit --no-fund
+        fi
+      fi
+    else
+      if ! "$NPM_CMD" install --no-audit --no-fund; then
+        warn "npm install failed; retrying with project-local npm cache..."
+        mkdir -p "$ROOT_DIR/.npm-cache"
+        "$NPM_CMD" install --cache "$ROOT_DIR/.npm-cache" --no-audit --no-fund
+      fi
+    fi
+  )
 }
 
 http_check() {
@@ -372,7 +442,7 @@ start_frontend() {
   info "Starting SQL Audit Frontend..."
   (
     cd "$FRONTEND_DIR"
-    nohup npm run dev -- --port 5174 >"$FRONTEND_LOG" 2>&1 &
+    nohup "$NPM_CMD" run dev -- --port 5174 >"$FRONTEND_LOG" 2>&1 &
     echo $! >"$FRONTEND_PID_FILE"
   )
   info "Frontend PID: $(cat "$FRONTEND_PID_FILE")"
