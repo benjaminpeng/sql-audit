@@ -2,15 +2,21 @@ package com.sqlaudit.controller;
 
 import com.sqlaudit.model.AuditRule;
 import com.sqlaudit.model.ScanReport;
+import com.sqlaudit.service.ReportExportService;
 import com.sqlaudit.service.RuleService;
 import com.sqlaudit.service.ScanService;
 import com.sqlaudit.util.TextDecodingUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -27,10 +33,12 @@ public class ScanController {
 
     private final ScanService scanService;
     private final RuleService ruleService;
+    private final ReportExportService reportExportService;
 
-    public ScanController(ScanService scanService, RuleService ruleService) {
+    public ScanController(ScanService scanService, RuleService ruleService, ReportExportService reportExportService) {
         this.scanService = scanService;
         this.ruleService = ruleService;
+        this.reportExportService = reportExportService;
     }
 
     /**
@@ -46,6 +54,7 @@ public class ScanController {
         try {
             log.info("收到扫描请求: {}", repoPath);
             ScanReport report = scanService.scan(repoPath);
+            scanService.cacheLastScanReport(report);
             return ResponseEntity.ok(report);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -83,6 +92,7 @@ public class ScanController {
             }
 
             ScanReport report = scanService.scanSqlContent(sqlContent, filename, notices);
+            scanService.cacheLastScanReport(report);
             return ResponseEntity.ok(report);
         } catch (Exception e) {
             log.error("SQL 脚本审查失败", e);
@@ -148,5 +158,75 @@ public class ScanController {
     public ResponseEntity<?> clearCustomRules() {
         ruleService.clearCustomRules();
         return ResponseEntity.ok(Map.of("message", "已清除自定义规则"));
+    }
+
+    /**
+     * 导出 Markdown 报告（优先使用请求体中的报告；未传时回退到服务端最近一次扫描结果）
+     */
+    @PostMapping("/report/export/markdown")
+    public ResponseEntity<?> exportMarkdown(@RequestBody(required = false) ScanReport report) {
+        return exportReport("markdown", report);
+    }
+
+    /**
+     * 导出 JSON 报告（优先使用请求体中的报告；未传时回退到服务端最近一次扫描结果）
+     */
+    @PostMapping("/report/export/json")
+    public ResponseEntity<?> exportJson(@RequestBody(required = false) ScanReport report) {
+        return exportReport("json", report);
+    }
+
+    /**
+     * 直接下载最近一次 Markdown 报告（便于浏览器直接触发下载）
+     */
+    @GetMapping("/report/export/markdown")
+    public ResponseEntity<?> exportMarkdownLatest() {
+        return exportReport("markdown", null);
+    }
+
+    /**
+     * 直接下载最近一次 JSON 报告（便于浏览器直接触发下载）
+     */
+    @GetMapping("/report/export/json")
+    public ResponseEntity<?> exportJsonLatest() {
+        return exportReport("json", null);
+    }
+
+    private ResponseEntity<?> exportReport(String format, ScanReport requestReport) {
+        try {
+            ScanReport report = resolveReportForExport(requestReport);
+            if (report == null) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .body(Map.of("error", "暂无可导出的审查报告，请先执行一次扫描"));
+            }
+
+            ReportExportService.ExportPayload payload;
+            if ("markdown".equalsIgnoreCase(format)) {
+                payload = reportExportService.exportMarkdown(report);
+            } else if ("json".equalsIgnoreCase(format)) {
+                payload = reportExportService.exportJson(report);
+            } else {
+                return ResponseEntity.badRequest().body(Map.of("error", "不支持的导出格式: " + format));
+            }
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.parseMediaType(payload.contentType()));
+            headers.setContentLength(payload.content().length);
+            headers.setContentDisposition(ContentDisposition.attachment()
+                    .filename(payload.filename(), StandardCharsets.UTF_8)
+                    .build());
+            return new ResponseEntity<>(payload.content(), headers, HttpStatus.OK);
+        } catch (Exception e) {
+            log.error("导出报告失败, format={}", format, e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "导出失败: " + e.getMessage()));
+        }
+    }
+
+    private ScanReport resolveReportForExport(ScanReport requestReport) {
+        if (requestReport != null && requestReport.getScanTime() != null) {
+            return requestReport;
+        }
+        return scanService.getLastScanReport().orElse(null);
     }
 }

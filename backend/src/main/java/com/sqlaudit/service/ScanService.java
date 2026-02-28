@@ -18,6 +18,7 @@ import java.time.LocalDateTime;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * 代码仓库扫描服务
@@ -34,6 +35,7 @@ public class ScanService {
     private final MyBatisMapperParser mapperParser;
     private final SqlScriptParser sqlScriptParser;
     private final RuleService ruleService;
+    private final AtomicReference<ScanReport> lastScanReport = new AtomicReference<>();
 
     public ScanService(MyBatisMapperParser mapperParser, SqlScriptParser sqlScriptParser, RuleService ruleService) {
         this.mapperParser = mapperParser;
@@ -115,7 +117,7 @@ public class ScanService {
                 .map(f -> repoRoot.relativize(f.toPath()).toString())
                 .toList();
 
-        return ScanReport.builder()
+        ScanReport report = ScanReport.builder()
                 .repoPath(resolvedRepoPath)
                 .scanTime(LocalDateTime.now())
                 .totalFiles(mapperFiles.size())
@@ -129,6 +131,8 @@ public class ScanService {
                 .notices(List.copyOf(notices))
                 .limitReached(limitReached)
                 .build();
+        lastScanReport.set(report);
+        return report;
     }
 
     /**
@@ -182,7 +186,7 @@ public class ScanService {
         long infoCount = allViolations.stream()
                 .filter(v -> v.getRule().getSeverity() == Severity.INFO).count();
 
-        return ScanReport.builder()
+        ScanReport report = ScanReport.builder()
                 .repoPath(fileName)
                 .scanTime(LocalDateTime.now())
                 .totalFiles(1)
@@ -196,6 +200,18 @@ public class ScanService {
                 .notices(List.copyOf(notices))
                 .limitReached(limitReached)
                 .build();
+        lastScanReport.set(report);
+        return report;
+    }
+
+    public Optional<ScanReport> getLastScanReport() {
+        return Optional.ofNullable(lastScanReport.get());
+    }
+
+    public void cacheLastScanReport(ScanReport report) {
+        if (report != null) {
+            lastScanReport.set(report);
+        }
     }
 
     /**

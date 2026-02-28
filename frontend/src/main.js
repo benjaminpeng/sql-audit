@@ -793,7 +793,9 @@ function handleClearResults() {
 }
 
 function downloadFile(content, filename, mimeType) {
-    const blob = new Blob([content], { type: mimeType });
+    const blob = content instanceof Blob
+        ? content
+        : new Blob([content], { type: mimeType || 'application/octet-stream' });
 
     // Legacy IE/Edge compatibility (some corporate environments still use it)
     if (typeof navigator.msSaveOrOpenBlob === 'function') {
@@ -810,6 +812,52 @@ function downloadFile(content, filename, mimeType) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+}
+
+function extractFilenameFromDisposition(disposition) {
+    if (!disposition) return null;
+
+    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match?.[1]) {
+        try {
+            return decodeURIComponent(utf8Match[1]).replace(/["']/g, '');
+        } catch {
+            return utf8Match[1].replace(/["']/g, '');
+        }
+    }
+
+    const normalMatch = disposition.match(/filename="?([^"]+)"?/i);
+    if (normalMatch?.[1]) {
+        return normalMatch[1];
+    }
+    return null;
+}
+
+async function downloadExportFromBackend(format, report) {
+    const res = await fetch(`/api/report/export/${format}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(report || {})
+    });
+
+    if (!res.ok) {
+        let message = `导出失败（${res.status}）`;
+        try {
+            const error = await res.json();
+            if (error?.error) {
+                message = error.error;
+            }
+        } catch {
+            // ignore json parse errors
+        }
+        throw new Error(message);
+    }
+
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition');
+    const fallbackExt = format === 'json' ? 'json' : 'md';
+    const filename = extractFilenameFromDisposition(disposition) || `sql-audit-report-${Date.now()}.${fallbackExt}`;
+    downloadFile(blob, filename, blob.type);
 }
 
 function buildMarkdownReport(report) {
@@ -877,14 +925,21 @@ function handleExportMarkdown() {
         return;
     }
 
-    try {
-        const md = buildMarkdownReport(report);
-        downloadFile(md, `sql-audit-report-${Date.now()}.md`, 'text/markdown;charset=utf-8');
-        showToast('Markdown 报告导出成功');
-    } catch (err) {
-        console.error('导出 Markdown 失败', err);
-        showToast('导出失败，请稍后重试', 'error');
-    }
+    downloadExportFromBackend('markdown', report)
+        .then(() => {
+            showToast('Markdown 报告导出成功');
+        })
+        .catch((err) => {
+            console.error('后端导出 Markdown 失败，回退到前端导出', err);
+            try {
+                const md = buildMarkdownReport(report);
+                downloadFile(md, `sql-audit-report-${Date.now()}.md`, 'text/markdown;charset=utf-8');
+                showToast('Markdown 报告导出成功（本地回退）');
+            } catch (fallbackErr) {
+                console.error('前端回退导出也失败', fallbackErr);
+                showToast('导出失败，请稍后重试', 'error');
+            }
+        });
 }
 
 function handleExportJson() {
@@ -894,14 +949,21 @@ function handleExportJson() {
         return;
     }
 
-    try {
-        const json = JSON.stringify(report, null, 2);
-        downloadFile(json, `sql-audit-report-${Date.now()}.json`, 'application/json;charset=utf-8');
-        showToast('JSON 报告导出成功');
-    } catch (err) {
-        console.error('导出 JSON 失败', err);
-        showToast('导出失败，请稍后重试', 'error');
-    }
+    downloadExportFromBackend('json', report)
+        .then(() => {
+            showToast('JSON 报告导出成功');
+        })
+        .catch((err) => {
+            console.error('后端导出 JSON 失败，回退到前端导出', err);
+            try {
+                const json = JSON.stringify(report, null, 2);
+                downloadFile(json, `sql-audit-report-${Date.now()}.json`, 'application/json;charset=utf-8');
+                showToast('JSON 报告导出成功（本地回退）');
+            } catch (fallbackErr) {
+                console.error('前端回退导出也失败', fallbackErr);
+                showToast('导出失败，请稍后重试', 'error');
+            }
+        });
 }
 
 async function handleSqlFileScan(file) {
