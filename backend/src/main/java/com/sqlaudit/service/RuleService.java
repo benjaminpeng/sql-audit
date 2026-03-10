@@ -7,6 +7,7 @@ import com.sqlaudit.model.Violation;
 import com.sqlaudit.parser.WordRuleParser;
 import com.sqlaudit.rule.checker.SqlChecker;
 import com.sqlaudit.rule.checker.SqlChecker.CheckResult;
+import com.sqlaudit.rule.checker.SqlScriptChecker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -57,17 +58,21 @@ public class RuleService {
                         "truncate", "for", "count", "sum", "avg", "max", "min");
 
         private final Map<String, SqlChecker> checkerMap;
+        private final Map<String, SqlScriptChecker> scriptCheckerMap;
         private final WordRuleParser wordRuleParser;
         private final List<AuditRule> defaultRules;
         private final List<AuditRule> customRules = new CopyOnWriteArrayList<>();
         private final Map<String, Pattern> patternCache = new java.util.concurrent.ConcurrentHashMap<>();
 
-        public RuleService(List<SqlChecker> checkers, WordRuleParser wordRuleParser) {
+        public RuleService(List<SqlChecker> checkers, List<SqlScriptChecker> scriptCheckers, WordRuleParser wordRuleParser) {
                 this.wordRuleParser = wordRuleParser;
                 this.checkerMap = checkers.stream()
                                 .collect(Collectors.toMap(SqlChecker::name, c -> c));
+                this.scriptCheckerMap = scriptCheckers.stream()
+                                .collect(Collectors.toMap(SqlScriptChecker::name, c -> c));
                 this.defaultRules = buildDefaultRules();
-                log.info("加载了 {} 个内置检查器, {} 条默认规则", checkerMap.size(), defaultRules.size());
+                log.info("加载了 {} 个逐语句检查器, {} 个脚本检查器, {} 条默认规则",
+                                checkerMap.size(), scriptCheckerMap.size(), defaultRules.size());
         }
 
         public List<AuditRule> getAllRules() {
@@ -101,9 +106,49 @@ public class RuleService {
         public List<Violation> checkSql(SqlFragment fragment) {
                 List<Violation> violations = new ArrayList<>();
                 for (AuditRule rule : getAllRules()) {
+                        if (!ruleAppliesToFragment(rule, fragment)) {
+                                continue;
+                        }
                         Violation v = applyRule(rule, fragment);
                         if (v != null) {
                                 violations.add(v);
+                        }
+                }
+                return violations;
+        }
+
+        public List<Violation> checkSqlScript(List<SqlFragment> fragments) {
+                if (fragments == null || fragments.isEmpty()) {
+                        return List.of();
+                }
+
+                List<Violation> violations = new ArrayList<>();
+                for (AuditRule rule : getAllRules()) {
+                        if (rule.getType() != RuleType.BUILT_IN || !ruleAppliesToSqlScript(rule)) {
+                                continue;
+                        }
+
+                        SqlScriptChecker checker = scriptCheckerMap.get(rule.getCheckerName());
+                        if (checker == null) {
+                                continue;
+                        }
+
+                        try {
+                                for (SqlScriptChecker.CheckResult result : checker.check(fragments)) {
+                                        if (result.fragment() == null) {
+                                                continue;
+                                        }
+                                        violations.add(Violation.builder()
+                                                        .rule(rule)
+                                                        .sqlFragment(result.fragment())
+                                                        .message(result.message())
+                                                        .suggestion(buildSuggestion(rule, result.fragment(), null))
+                                                        .exampleSql(null)
+                                                        .matchedText(result.matchedText())
+                                                        .build());
+                                }
+                        } catch (Exception e) {
+                                log.warn("应用脚本规则 {} 时出错: {}", rule.getId(), e.getMessage());
                         }
                 }
                 return violations;
@@ -175,6 +220,8 @@ public class RuleService {
                         case "COUNT_USAGE" -> "确认 `count()` 是否必须实时精确；大表可考虑缓存计数、近似统计或增加更精确的过滤条件。";
                         case "REQUIRE_LIMIT" -> "为大结果集查询增加分页条件（如 `LIMIT ? OFFSET ?`），并搭配稳定排序（如 `ORDER BY id`）。";
                         case "UPDATE_LIMIT" -> "OpenGauss 不支持 `UPDATE ... LIMIT`；可改为子查询/CTE 先选主键，再按主键 UPDATE。";
+                        case "UPDATE_REQUIRE_WHERE" -> "为 `UPDATE` 语句补充 WHERE 条件，并先用 SELECT 验证影响行范围后再执行。";
+                        case "DELETE_REQUIRE_WHERE" -> "为 `DELETE` 语句补充 WHERE 条件，并先用 SELECT 验证影响行范围后再执行。";
                         case "REQUIRE_WHERE" -> "为 `" + type.toUpperCase(Locale.ROOT) + "` 语句补充 WHERE 条件，并先用 SELECT 验证影响行范围后再执行。";
                         case "DELETE_TRUNCATE" -> "若确实要清空整表，改为 `TRUNCATE TABLE 表名`；若只删部分数据，请补充 WHERE 条件。";
                         case "JOIN_TABLE_COUNT" -> "拆分过长联表查询（>8 表）为中间结果/临时表/CTE 分步处理，并优先保留核心过滤条件。";
@@ -206,6 +253,8 @@ public class RuleService {
                         case "UNION_ALL" -> rewriteUnionAll(sql);
                         case "REQUIRE_LIMIT" -> rewriteRequireLimit(sql);
                         case "UPDATE_LIMIT" -> rewriteUpdateLimit(sql);
+                        case "UPDATE_REQUIRE_WHERE" -> rewriteRequireWhere(sql, "update");
+                        case "DELETE_REQUIRE_WHERE" -> rewriteRequireWhere(sql, "delete");
                         case "REQUIRE_WHERE" -> rewriteRequireWhere(sql, fragment.getStatementType());
                         case "DELETE_TRUNCATE" -> rewriteDeleteTruncate(sql);
                         case "SQL_INJECTION_RISK" -> rewriteMyBatisDollarPlaceholder(sql);
@@ -531,159 +580,174 @@ public class RuleService {
                 return base + "_id";
         }
 
+        private boolean ruleAppliesToFragment(AuditRule rule, SqlFragment fragment) {
+                AppliesTo appliesTo = rule.getAppliesTo() == null ? AppliesTo.ALL : rule.getAppliesTo();
+                boolean sqlScript = fragment != null && "sql-script".equalsIgnoreCase(fragment.getNamespace());
+                return switch (appliesTo) {
+                        case ALL -> true;
+                        case SQL_SCRIPT_ONLY -> sqlScript;
+                        case MYBATIS_ONLY -> !sqlScript;
+                };
+        }
+
+        private boolean ruleAppliesToSqlScript(AuditRule rule) {
+                AppliesTo appliesTo = rule.getAppliesTo() == null ? AppliesTo.ALL : rule.getAppliesTo();
+                return appliesTo == AppliesTo.ALL || appliesTo == AppliesTo.SQL_SCRIPT_ONLY;
+        }
+
+        private AuditRule defaultBuiltInRule(String id, String section, String category, String name,
+                        String description, Severity severity, String checkerName) {
+                return defaultBuiltInRule(id, section, category, name, description, severity, checkerName, AppliesTo.ALL);
+        }
+
+        private AuditRule defaultBuiltInRule(String id, String section, String category, String name,
+                        String description, Severity severity, String checkerName, AppliesTo appliesTo) {
+                return AuditRule.builder()
+                                .id(id)
+                                .section(section)
+                                .category(category)
+                                .name(name)
+                                .description(description)
+                                .severity(severity)
+                                .type(RuleType.BUILT_IN)
+                                .checkerName(checkerName)
+                                .source(RuleSource.DEFAULT)
+                                .appliesTo(appliesTo)
+                                .build();
+        }
+
         /**
-         * 构建默认内置规则 — 对齐 OpenGauss 开发规范 3.2 ~ 3.9
+         * 构建默认内置规则
          */
         private List<AuditRule> buildDefaultRules() {
                 List<AuditRule> rules = new ArrayList<>();
 
-                // ========== 3.2 对象访问 ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_3_2_2").section("3.2.2").category("对象访问")
-                                .name("建议使用Schema前缀")
-                                .description("访问对象（表，函数等）时建议带上SCHEMA名称，避免不必要的性能开销")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("SCHEMA_PREFIX").source(RuleSource.DEFAULT).build());
+                // 共享默认规则（21）
+                rules.add(defaultBuiltInRule("OG_3_2_2", "3.2.2", "对象访问", "建议使用Schema前缀",
+                                "访问对象（表，函数等）时建议带上SCHEMA名称，避免不必要的性能开销",
+                                Severity.WARNING, "SCHEMA_PREFIX"));
+                rules.add(defaultBuiltInRule("OG_3_3_1", "3.3.1", "WHERE子句", "禁止用 = 或 != 判断 NULL",
+                                "查询条件中判断 NULL 时，禁止使用 = 和 !=，应使用 IS NULL 或 IS NOT NULL",
+                                Severity.ERROR, "NULL_COMPARISON"));
+                rules.add(defaultBuiltInRule("OG_3_3_3", "3.3.3", "WHERE子句", "WHERE 条件字段禁用函数",
+                                "不建议 WHERE 条件字段使用表达式或函数，会导致索引失效",
+                                Severity.WARNING, "WHERE_FUNCTION"));
+                rules.add(defaultBuiltInRule("OG_3_3_4", "3.3.4", "WHERE子句", "少用负向操作符",
+                                "查询条件中尽量少使用 !=, <>, NOT IN 等无法利用索引的操作符",
+                                Severity.WARNING, "NOT_EQUAL_OPS"));
+                rules.add(defaultBuiltInRule("OG_3_3_5", "3.3.5", "WHERE子句", "LIKE 禁止前缀 %",
+                                "LIKE 语句 % 不应放在首字符位置，会导致全表扫描",
+                                Severity.WARNING, "LIKE_PERCENT_START"));
+                rules.add(defaultBuiltInRule("OG_3_3_6", "3.3.6", "WHERE子句", "IN 子集不宜过大",
+                                "WHERE 条件中 IN 的候选子集不宜超过100个",
+                                Severity.WARNING, "IN_LIST_SIZE"));
+                rules.add(defaultBuiltInRule("OG_3_4_1", "3.4.1", "SELECT", "禁止 SELECT *",
+                                "SELECT 语句中禁用通配符字段 *，请明确指定查询列",
+                                Severity.ERROR, "NO_SELECT_STAR"));
+                rules.add(defaultBuiltInRule("OG_3_4_3", "3.4.3", "SELECT", "禁止 LOCK TABLE",
+                                "禁止使用 LOCK TABLE 语句加锁，仅允许使用 SELECT .. FOR UPDATE",
+                                Severity.ERROR, "LOCK_TABLE"));
+                rules.add(defaultBuiltInRule("OG_3_4_4", "3.4.4", "SELECT", "优先使用 UNION ALL",
+                                "考虑使用 UNION ALL 代替 UNION，避免不必要的去重排序开销",
+                                Severity.WARNING, "UNION_ALL"));
+                rules.add(defaultBuiltInRule("OG_3_4_5", "3.4.5", "SELECT", "慎用 count()",
+                                "避免频繁使用 count() 获取大表行数，资源消耗较大",
+                                Severity.INFO, "COUNT_USAGE"));
+                rules.add(defaultBuiltInRule("OG_3_4_LIMIT", "3.4.6", "SELECT", "SELECT 建议分页",
+                                "SELECT 语句建议使用 LIMIT 分页，避免全表查询",
+                                Severity.WARNING, "REQUIRE_LIMIT"));
+                rules.add(defaultBuiltInRule("OG_3_6_1", "3.6.1", "UPDATE", "UPDATE 禁用 LIMIT",
+                                "OpenGauss 不支持 UPDATE 语句中使用 LIMIT",
+                                Severity.ERROR, "UPDATE_LIMIT"));
+                rules.add(defaultBuiltInRule("OG_3_6_3", "3.6.3", "UPDATE", "UPDATE 必须有 WHERE",
+                                "UPDATE 语句中必须有 WHERE 子句，避免全表更新",
+                                Severity.ERROR, "UPDATE_REQUIRE_WHERE"));
+                rules.add(defaultBuiltInRule("OG_3_7_2", "3.7.2", "DELETE", "全表删除用 TRUNCATE",
+                                "清空一张表建议使用 TRUNCATE，而不是 DELETE",
+                                Severity.ERROR, "DELETE_TRUNCATE"));
+                rules.add(defaultBuiltInRule("OG_3_7_3", "3.7.3", "DELETE", "DELETE 必须有 WHERE",
+                                "DELETE 语句中必须有 WHERE 子句，避免全表删除",
+                                Severity.ERROR, "DELETE_REQUIRE_WHERE"));
+                rules.add(defaultBuiltInRule("OG_3_8_1", "3.8.1", "关联查询", "限制关联表数量",
+                                "禁止超过8表关联，建议不超过5个",
+                                Severity.ERROR, "JOIN_TABLE_COUNT"));
+                rules.add(defaultBuiltInRule("OG_3_8_3", "3.8.3", "关联查询", "禁止隐式 JOIN",
+                                "避免使用逗号分隔的隐式 JOIN，应使用显式 INNER/LEFT/RIGHT JOIN",
+                                Severity.ERROR, "IMPLICIT_JOIN"));
+                rules.add(defaultBuiltInRule("OG_3_9_3", "3.9.3", "子查询", "目标列禁用子查询",
+                                "避免在 SELECT 目标列中使用子查询，可能导致计划无法下推影响执行性能",
+                                Severity.WARNING, "SUBQUERY_IN_TARGET"));
+                rules.add(defaultBuiltInRule("OG_3_9_4", "3.9.4", "子查询", "子查询嵌套不超过2层",
+                                "子查询嵌套深度不建议超过2层",
+                                Severity.WARNING, "SUBQUERY_DEPTH"));
+                rules.add(defaultBuiltInRule("OG_MYBATIS_INJECTION", "MyBatis", "安全", "SQL 注入风险",
+                                "MyBatis 中使用 ${} 存在 SQL 注入风险，应使用 #{} 参数绑定",
+                                Severity.ERROR, "SQL_INJECTION_RISK"));
+                rules.add(defaultBuiltInRule("OG_STYLE_1", "Style", "代码风格", "SQL 关键字统一大写",
+                                "SQL 关键字建议统一使用大写风格",
+                                Severity.WARNING, "KEYWORD_UPPERCASE"));
 
-                // ========== 3.3 WHERE 子句 ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_3_3_1").section("3.3.1").category("WHERE子句")
-                                .name("禁止用 = 或 != 判断 NULL")
-                                .description("查询条件中判断 NULL 时，禁止使用 = 和 !=，应使用 IS NULL 或 IS NOT NULL")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("NULL_COMPARISON").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_3_3").section("3.3.3").category("WHERE子句")
-                                .name("WHERE 条件字段禁用函数")
-                                .description("不建议 WHERE 条件字段使用表达式或函数，会导致索引失效")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("WHERE_FUNCTION").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_3_4").section("3.3.4").category("WHERE子句")
-                                .name("少用负向操作符")
-                                .description("查询条件中尽量少使用 !=, <>, NOT IN 等无法利用索引的操作符")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("NOT_EQUAL_OPS").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_3_5").section("3.3.5").category("WHERE子句")
-                                .name("LIKE 禁止前缀 %")
-                                .description("LIKE 语句 % 不应放在首字符位置，会导致全表扫描")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("LIKE_PERCENT_START").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_3_6").section("3.3.6").category("WHERE子句")
-                                .name("IN 子集不宜过大")
-                                .description("WHERE 条件中 IN 的候选子集不宜超过100个")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("IN_LIST_SIZE").source(RuleSource.DEFAULT).build());
-
-                // ========== 3.4 SELECT ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_3_4_1").section("3.4.1").category("SELECT")
-                                .name("禁止 SELECT *")
-                                .description("SELECT 语句中禁用通配符字段 *，请明确指定查询列")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("NO_SELECT_STAR").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_4_3").section("3.4.3").category("SELECT")
-                                .name("禁止 LOCK TABLE")
-                                .description("禁止使用 LOCK TABLE 语句加锁，仅允许使用 SELECT .. FOR UPDATE")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("LOCK_TABLE").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_4_4").section("3.4.4").category("SELECT")
-                                .name("优先使用 UNION ALL")
-                                .description("考虑使用 UNION ALL 代替 UNION，避免不必要的去重排序开销")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("UNION_ALL").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_4_5").section("3.4.5").category("SELECT")
-                                .name("慎用 count()")
-                                .description("避免频繁使用 count() 获取大表行数，资源消耗较大")
-                                .severity(Severity.INFO).type(RuleType.BUILT_IN)
-                                .checkerName("COUNT_USAGE").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_4_LIMIT").section("3.4.6").category("SELECT")
-                                .name("SELECT 建议分页")
-                                .description("SELECT 语句建议使用 LIMIT 分页，避免全表查询")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("REQUIRE_LIMIT").source(RuleSource.DEFAULT).build());
-
-                // ========== 3.6 UPDATE ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_3_6_1").section("3.6.1").category("UPDATE")
-                                .name("UPDATE 禁用 LIMIT")
-                                .description("OpenGauss 不支持 UPDATE 语句中使用 LIMIT")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("UPDATE_LIMIT").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_6_3").section("3.6.3").category("UPDATE")
-                                .name("UPDATE 必须有 WHERE")
-                                .description("UPDATE 语句中必须有 WHERE 子句，避免全表更新")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("REQUIRE_WHERE").source(RuleSource.DEFAULT).build());
-
-                // ========== 3.7 DELETE ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_3_7_2").section("3.7.2").category("DELETE")
-                                .name("全表删除用 TRUNCATE")
-                                .description("清空一张表建议使用 TRUNCATE，而不是 DELETE")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("DELETE_TRUNCATE").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_7_3").section("3.7.3").category("DELETE")
-                                .name("DELETE 必须有 WHERE")
-                                .description("DELETE 语句中必须有 WHERE 子句，避免全表删除")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("REQUIRE_WHERE").source(RuleSource.DEFAULT).build());
-
-                // ========== 3.8 关联查询 ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_3_8_1").section("3.8.1").category("关联查询")
-                                .name("限制关联表数量")
-                                .description("禁止超过8表关联，建议不超过5个")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("JOIN_TABLE_COUNT").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_8_3").section("3.8.3").category("关联查询")
-                                .name("禁止隐式 JOIN")
-                                .description("避免使用逗号分隔的隐式 JOIN，应使用显式 INNER/LEFT/RIGHT JOIN")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("IMPLICIT_JOIN").source(RuleSource.DEFAULT).build());
-
-                // ========== 3.9 子查询 ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_3_9_3").section("3.9.3").category("子查询")
-                                .name("目标列禁用子查询")
-                                .description("避免在 SELECT 目标列中使用子查询，可能导致计划无法下推影响执行性能")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("SUBQUERY_IN_TARGET").source(RuleSource.DEFAULT).build());
-
-                rules.add(AuditRule.builder()
-                                .id("OG_3_9_4").section("3.9.4").category("子查询")
-                                .name("子查询嵌套不超过2层")
-                                .description("子查询嵌套深度不建议超过2层")
-                                .severity(Severity.WARNING).type(RuleType.BUILT_IN)
-                                .checkerName("SUBQUERY_DEPTH").source(RuleSource.DEFAULT).build());
-
-                // ========== MyBatis 专属 ==========
-                rules.add(AuditRule.builder()
-                                .id("OG_MYBATIS_INJECTION").section("MyBatis").category("安全")
-                                .name("SQL 注入风险")
-                                .description("MyBatis 中使用 ${} 存在 SQL 注入风险，应使用 #{} 参数绑定")
-                                .severity(Severity.ERROR).type(RuleType.BUILT_IN)
-                                .checkerName("SQL_INJECTION_RISK").source(RuleSource.DEFAULT).build());
+                // SQL 脚本专用默认规则（20）
+                rules.add(defaultBuiltInRule("OG_2_2_3", "2.2.3", "对象命名", "避免使用双引号对象名",
+                                "避免使用双引号括起来的字符串来定义数据库对象名称，除非必须区分大小写",
+                                Severity.WARNING, "QUOTED_OBJECT_NAME", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_2_4A", "2.2.4", "对象命名", "对象名字符集限制",
+                                "对象名限定使用小写字母、下划线、数字三类字符",
+                                Severity.ERROR, "OBJECT_NAME_CHARS", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_2_4B", "2.2.4", "对象命名", "对象名禁止特殊前缀",
+                                "对象名禁止以 pg、gs、mlog、redis、数字、下划线开头",
+                                Severity.ERROR, "OBJECT_NAME_PREFIX", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_2_5", "2.2.5", "对象命名", "别名字符限制",
+                                "SQL 语句中的别名只使用小写字母、下划线、数字三类字符",
+                                Severity.WARNING, "ALIAS_NAME_CHARS", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_3_4", "2.3.4", "数据库设计", "数据库字符集必须为 UTF8",
+                                "创建数据库时必须指定字符集为 UTF8，并与客户端统一编码",
+                                Severity.ERROR, "DATABASE_UTF8", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_3_5", "2.3.5", "数据库设计", "数据库 Locale 必须显式指定",
+                                "创建数据库时必须指定 LC_CTYPE='en_US.UTF8' 和 LC_COLLATE='C'",
+                                Severity.ERROR, "DATABASE_LOCALE", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_6_4", "2.6.4", "表设计", "所有表必须有主键",
+                                "所有表必须定义主键",
+                                Severity.ERROR, "TABLE_PRIMARY_KEY", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_6_5", "2.6.5", "表设计", "禁止使用外键",
+                                "禁止使用外键，建议在应用层维护关联关系",
+                                Severity.ERROR, "FOREIGN_KEY_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_6_7", "2.6.7", "表设计", "表存储必须使用 ustore",
+                                "表存储必须使用 ustore，禁止使用 astore",
+                                Severity.ERROR, "USTORE_REQUIRED", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_6_8", "2.6.8", "表设计", "禁止使用列存表",
+                                "列存表不满足当前商用约束，禁止使用",
+                                Severity.ERROR, "COLUMN_STORE_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_6_10", "2.6.10", "表设计", "视图定义尽量避免排序",
+                                "视图定义中尽量避免 ORDER BY 排序操作",
+                                Severity.WARNING, "VIEW_ORDER_BY", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_7_1", "2.7.1", "字段设计", "禁止使用 money 类型",
+                                "禁止使用 money 类型，建议使用 NUMERIC(precision, scale)",
+                                Severity.ERROR, "MONEY_TYPE_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_7_12", "2.7.12", "字段设计", "字段定义建议补充注释",
+                                "字段定义时建议同时创建 COMMENT 注释信息",
+                                Severity.WARNING, "COLUMN_COMMENT_REQUIRED", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_8_3", "2.8.3", "索引设计", "组合索引字段数不超过5个",
+                                "组合索引字段个数不超过5个",
+                                Severity.ERROR, "INDEX_COLUMN_COUNT", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_9_1", "2.9.1", "其他对象", "禁止使用触发器",
+                                "禁止使用触发器",
+                                Severity.ERROR, "TRIGGER_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_9_2", "2.9.2", "其他对象", "禁止使用存储过程",
+                                "禁止使用存储过程",
+                                Severity.ERROR, "PROCEDURE_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_9_3", "2.9.3", "其他对象", "禁止使用函数",
+                                "禁止使用函数，特殊情况使用需要经过审批",
+                                Severity.ERROR, "FUNCTION_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_9_4A", "2.9.4", "其他对象", "禁止使用外部表",
+                                "禁止使用外部表",
+                                Severity.ERROR, "EXTERNAL_TABLE_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_9_4B", "2.9.4", "其他对象", "禁止使用 dblink",
+                                "禁止使用 dblink",
+                                Severity.ERROR, "DBLINK_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
+                rules.add(defaultBuiltInRule("OG_2_9_4C", "2.9.4", "其他对象", "禁止使用大对象",
+                                "禁止使用大对象相关语法",
+                                Severity.ERROR, "LARGE_OBJECT_FORBIDDEN", AppliesTo.SQL_SCRIPT_ONLY));
 
                 return rules;
         }

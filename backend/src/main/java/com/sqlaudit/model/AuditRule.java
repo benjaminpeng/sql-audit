@@ -44,6 +44,10 @@ public class AuditRule {
     /** 规则来源: DEFAULT（内置默认）, CUSTOM（用户上传） */
     private RuleSource source;
 
+    /** 规则适用范围 */
+    @Builder.Default
+    private AppliesTo appliesTo = AppliesTo.ALL;
+
     public enum Severity {
         ERROR, WARNING, INFO
     }
@@ -54,5 +58,9 @@ public class AuditRule {
 
     public enum RuleSource {
         DEFAULT, CUSTOM
+    }
+
+    public enum AppliesTo {
+        ALL, SQL_SCRIPT_ONLY, MYBATIS_ONLY
     }
 }

@@ -90,14 +90,7 @@ public class ScanService {
         for (SqlFragment fragment : allFragments) {
             if (limitReached)
                 break;
-            List<Violation> violations = ruleService.checkSql(fragment);
-            for (Violation v : violations) {
-                if (allViolations.size() >= MAX_VIOLATIONS) {
-                    limitReached = true;
-                    break;
-                }
-                allViolations.add(v);
-            }
+            limitReached = appendViolationsUpToLimit(allViolations, ruleService.checkSql(fragment));
         }
         if (limitReached) {
             log.warn("违规数量达到上限 {}，停止进一步扫描", MAX_VIOLATIONS);
@@ -163,14 +156,10 @@ public class ScanService {
         for (SqlFragment fragment : fragments) {
             if (limitReached)
                 break;
-            List<Violation> violations = ruleService.checkSql(fragment);
-            for (Violation v : violations) {
-                if (allViolations.size() >= MAX_VIOLATIONS) {
-                    limitReached = true;
-                    break;
-                }
-                allViolations.add(v);
-            }
+            limitReached = appendViolationsUpToLimit(allViolations, ruleService.checkSql(fragment));
+        }
+        if (!limitReached) {
+            limitReached = appendViolationsUpToLimit(allViolations, ruleService.checkSqlScript(fragments));
         }
         if (limitReached) {
             log.warn("SQL脚本违规数量达到上限 {}，停止进一步扫描", MAX_VIOLATIONS);
@@ -212,6 +201,19 @@ public class ScanService {
         if (report != null) {
             lastScanReport.set(report);
         }
+    }
+
+    private boolean appendViolationsUpToLimit(List<Violation> target, List<Violation> source) {
+        if (source == null || source.isEmpty()) {
+            return false;
+        }
+        for (Violation violation : source) {
+            if (target.size() >= MAX_VIOLATIONS) {
+                return true;
+            }
+            target.add(violation);
+        }
+        return target.size() >= MAX_VIOLATIONS;
     }
 
     /**

@@ -261,6 +261,7 @@ function renderRulesSection() {
                                 <span class="dot dot-${rule.severity}"></span>
                                 ${rule.section ? `<span class="section-num">${rule.section}</span>` : ''}
                                 ${rule.name}
+                                ${renderRuleScopeBadge(rule.appliesTo)}
                             </span>
                         `).join('')}
                     </div>
@@ -282,6 +283,14 @@ function renderRulesSection() {
             ` : ''}
         </div>
     `;
+}
+
+function renderRuleScopeBadge(appliesTo) {
+    if (!appliesTo || appliesTo === 'ALL') {
+        return '';
+    }
+    const text = appliesTo === 'SQL_SCRIPT_ONLY' ? '仅 SQL 脚本' : '仅 MyBatis';
+    return `<span class="scope-badge">${text}</span>`;
 }
 
 function renderResults() {

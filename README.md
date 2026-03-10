@@ -12,9 +12,11 @@ A powerful, automated SQL compliance scanner designed for **MyBatis XML Mapper**
 
 ### 🚀 Key Features
 
-- **20 Built-in OpenGauss Rules** — Covers sections 3.2 (Schema), 3.3 (WHERE), 3.4 (SELECT), 3.6 (UPDATE), 3.7 (DELETE), 3.8 (Joins), 3.9 (Subqueries), and Security.
+- **41 Built-in OpenGauss Rules** — `21` shared rules for MyBatis and `.sql` scans, plus `20` SQL-script-only DDL/object design rules.
 - **Dual Scan Modes** — Scan MyBatis XML Mapper directories **or** upload standalone `.sql` change scripts.
 - **MyBatis Safety** — Detects potential SQL injection risks (`${}`).
+- **DDL / Script Governance** — Enforces object naming, database locale/encoding, primary-key/comment requirements, forbidden triggers/functions/procedures, and other OpenGauss-focused script rules.
+- **CLI + Skill Ready** — Supports fat-jar CLI execution and a local `sql-audit-scan` Codex skill wrapper.
 - **Custom Rules** — Upload a `.docx` Word document to dynamically load custom regex-based rules.
 - **Modern UI** — Dark-theme glassmorphism design with workflow-based layout, animated gradients, and responsive two-column interface.
 - **Visual Reports** — Interactive dashboard to filter violations by Severity (ERROR / WARNING / INFO) and Category.
@@ -23,9 +25,10 @@ A powerful, automated SQL compliance scanner designed for **MyBatis XML Mapper**
 
 | Layer | Technology |
 |---|---|
-| **Backend** | Java 21 (Virtual Threads), Spring Boot 3.4.1, SQLite (embedded) |
+| **Backend** | Java 21, Spring Boot 3.4.2 |
 | **Frontend** | Vite 6, Vanilla JS (ES Modules), CSS3 Glassmorphism |
-| **Parsing** | DOM-based XML parsing, Regex rule engine |
+| **Parsing** | DOM-based MyBatis parsing, SQL script splitting, Word rule extraction |
+| **Rule Engine** | Built-in `SqlChecker` + script-level `SqlScriptChecker` |
 | **Build** | Maven, Shell (`start.sh`) |
 
 ### 🏁 Getting Started
@@ -64,6 +67,49 @@ mvn clean spring-boot:run
 cd frontend
 npm install
 npm run dev -- --port 5174
+```
+
+#### CLI Mode
+
+The backend also supports non-web CLI execution for local automation:
+
+```bash
+cd backend
+mvn -q -DskipTests package
+java -jar target/sql-audit-0.1.0-SNAPSHOT.jar \
+  --spring.main.web-application-type=none \
+  --sql-audit.cli.enabled=true \
+  --sql-audit.cli.sql-file=/abs/path/to/change.sql \
+  --sql-audit.cli.json-out=/tmp/sql-audit-report.json \
+  --sql-audit.cli.markdown-out=/tmp/sql-audit-report.md
+```
+
+Scan a MyBatis repository directory by replacing `--sql-audit.cli.sql-file=...` with:
+
+```bash
+--sql-audit.cli.repo-path=/abs/path/to/mybatis-project
+```
+
+#### Codex Skill Usage
+
+Install the local skill symlink once:
+
+```bash
+./scripts/install-skill.sh
+```
+
+The skill wrapper will build the backend jar when needed, run the CLI, and print a compact JSON envelope with summary counts and report paths:
+
+```bash
+./skills/sql-audit-scan/scripts/invoke_scan.sh /abs/path/to/mybatis-project
+./skills/sql-audit-scan/scripts/invoke_scan.sh /abs/path/to/change.sql
+printf 'SELECT * FROM demo_user;' | ./skills/sql-audit-scan/scripts/invoke_scan.sh
+```
+
+Installed target:
+
+```text
+~/.codex/skills/sql-audit-scan
 ```
 
 #### WSL (Windows Subsystem for Linux) Notes
@@ -237,33 +283,20 @@ If your company network only allows internal mirrors, complete the following onc
 
 1. **Scanning** — `ScanController` receives a directory path or uploaded `.sql` file.
 2. **Parsing** — `MyBatisMapperParser` extracts SQL from XML; `SqlScriptParser` splits standalone scripts.
-3. **Rule Engine** — `RuleService` applies all active `SqlChecker` implementations against each `SqlFragment`.
+3. **Rule Engine** — `RuleService` applies statement-level `SqlChecker` rules and script-level `SqlScriptChecker` rules, filtered by rule scope.
 4. **Reporting** — Returns a `ScanReport` with categorized `Violation` records.
 
 ### 📏 Built-in Rules (OpenGauss)
 
-| Section | Rule | Sev | Description |
-|---|---|---|---|
-| 3.2.2 | `SCHEMA_PREFIX` | 🟡 | Recommend schema prefix for table references |
-| 3.3.1 | `NULL_COMPARISON` | 🔴 | Use `IS NULL` instead of `= NULL` |
-| 3.3.3 | `WHERE_FUNCTION` | 🟡 | Avoid functions on WHERE columns |
-| 3.3.4 | `NOT_EQUAL_OPS` | 🟡 | Avoid `!=`, `<>` (index invalidation) |
-| 3.3.5 | `LIKE_PERCENT` | 🟡 | Avoid leading `%` in LIKE patterns |
-| 3.3.6 | `IN_SUBQUERY_SIZE` | 🟡 | Keep IN-clause subsets small |
-| 3.4.1 | `NO_SELECT_STAR` | 🔴 | Explicitly list columns |
-| 3.4.3 | `LOCK_TABLE` | 🔴 | Forbid LOCK TABLE |
-| 3.4.4 | `UNION_ALL` | 🟡 | Prefer UNION ALL over UNION |
-| 3.4.5 | `COUNT_USAGE` | 🟡 | Use count() cautiously |
-| 3.4.6 | `SELECT_PAGINATION` | 🟡 | Recommend pagination for large queries |
-| 3.6.1 | `UPDATE_LIMIT` | 🔴 | Forbid LIMIT in UPDATE |
-| 3.6.3 | `UPDATE_WHERE` | 🔴 | UPDATE must have WHERE |
-| 3.7.2 | `TRUNCATE` | 🔴 | Forbid TRUNCATE for full-table deletes |
-| 3.7.3 | `DELETE_WHERE` | 🔴 | DELETE must have WHERE |
-| 3.8.1 | `JOIN_TABLE_LIMIT` | 🔴 | Limit number of joined tables |
-| 3.8.3 | `IMPLICIT_JOIN` | 🔴 | Use explicit JOIN syntax |
-| 3.9.3 | `SUBQUERY_IN_TARGET` | 🔴 | Avoid subqueries in SELECT target list |
-| 3.9.4 | `SUBQUERY_DEPTH` | 🔴 | Limit subquery nesting to 2 levels |
-| MyBatis | `SQL_INJECTION` | 🔴 | Use `#{}` instead of `${}` |
+| Scope | Count | Coverage |
+|---|---:|---|
+| Shared rules | 21 | Schema prefix, WHERE, SELECT, UPDATE, DELETE, JOIN, subquery, MyBatis injection, keyword uppercase |
+| SQL script only | 20 | Object naming, database encoding/locale, PK/comment requirements, foreign key / trigger / function / procedure bans, index column count, `ustore` / column-store rules |
+
+For the exact default rule list, see:
+
+- `skills/sql-audit-scan/references/default-rules.md`
+- `backend/src/main/java/com/sqlaudit/service/RuleService.java`
 
 ### ❓ Troubleshooting
 
@@ -281,9 +314,11 @@ If your company network only allows internal mirrors, complete the following onc
 
 ### 🚀 核心功能
 
-- **20 条内置 OpenGauss 规则** — 覆盖 3.2（Schema）、3.3（WHERE）、3.4（SELECT）、3.6（UPDATE）、3.7（DELETE）、3.8（关联查询）、3.9（子查询）及安全规范。
+- **41 条内置 OpenGauss 规则** — `21` 条共享规则覆盖 MyBatis 与 `.sql` 两种模式，另有 `20` 条 SQL 脚本专用 DDL / 对象设计规则。
 - **双模式扫描** — 扫描 MyBatis XML Mapper 目录 **或** 直接上传 `.sql` 变更脚本。
 - **MyBatis 安全检测** — 识别 `${}` 拼接的 SQL 注入风险。
+- **DDL / 脚本治理能力** — 覆盖对象命名、数据库字符集/Locale、主键/字段注释、禁用触发器/函数/存储过程等 OpenGauss 规范。
+- **CLI + Skill 可调用** — 后端支持 fat jar CLI，本仓库内置 `sql-audit-scan` 本地 skill 包装。
 - **自定义规则** — 上传 `.docx` Word 规范文档，动态加载自定义正则规则。
 - **现代化 UI** — 深色主题 + 玻璃拟态设计，工作流程左右分栏布局，动态渐变动画，完全响应式。
 - **可视化报告** — 交互式仪表盘，按严重程度（错误 / 警告 / 提示）和分类筛选违规项。
@@ -292,9 +327,10 @@ If your company network only allows internal mirrors, complete the following onc
 
 | 层级 | 技术 |
 |---|---|
-| **后端** | Java 21（虚拟线程）、Spring Boot 3.4.1、SQLite（内嵌） |
+| **后端** | Java 21、Spring Boot 3.4.2 |
 | **前端** | Vite 6、原生 JS（ES Modules）、CSS3 玻璃拟态 |
-| **解析** | DOM XML 解析、正则规则引擎 |
+| **解析** | DOM MyBatis 解析、SQL 脚本切分、Word 规则提取 |
+| **规则引擎** | 内置 `SqlChecker` + 脚本级 `SqlScriptChecker` |
 | **构建** | Maven、Shell（`start.sh`） |
 
 ### 🏁 快速开始
@@ -333,6 +369,49 @@ mvn clean spring-boot:run
 cd frontend
 npm install
 npm run dev -- --port 5174
+```
+
+#### CLI 模式
+
+后端支持无 Web 的本地 CLI 调用，适合脚本化或被 agent 直接调用：
+
+```bash
+cd backend
+mvn -q -DskipTests package
+java -jar target/sql-audit-0.1.0-SNAPSHOT.jar \
+  --spring.main.web-application-type=none \
+  --sql-audit.cli.enabled=true \
+  --sql-audit.cli.sql-file=/绝对路径/change.sql \
+  --sql-audit.cli.json-out=/tmp/sql-audit-report.json \
+  --sql-audit.cli.markdown-out=/tmp/sql-audit-report.md
+```
+
+如果要扫 MyBatis 仓库目录，把 `--sql-audit.cli.sql-file=...` 替换为：
+
+```bash
+--sql-audit.cli.repo-path=/绝对路径/mybatis-project
+```
+
+#### Skill 使用方式
+
+先安装一次本地 skill 软链接：
+
+```bash
+./scripts/install-skill.sh
+```
+
+skill 包装脚本会在需要时自动构建后端 jar，调用 CLI，并输出一份精简 JSON 摘要，包含统计信息和报告路径：
+
+```bash
+./skills/sql-audit-scan/scripts/invoke_scan.sh /绝对路径/mybatis-project
+./skills/sql-audit-scan/scripts/invoke_scan.sh /绝对路径/change.sql
+printf 'SELECT * FROM demo_user;' | ./skills/sql-audit-scan/scripts/invoke_scan.sh
+```
+
+安装目标：
+
+```text
+~/.codex/skills/sql-audit-scan
 ```
 
 #### WSL（Windows Subsystem for Linux）运行说明
@@ -506,33 +585,20 @@ npm run dev -- --port 5174
 
 1. **扫描入口** — `ScanController` 接收目录路径或上传的 `.sql` 文件。
 2. **解析** — `MyBatisMapperParser` 从 XML 中提取 SQL；`SqlScriptParser` 拆分独立脚本。
-3. **规则引擎** — `RuleService` 对每个 `SqlFragment` 执行所有 `SqlChecker` 检查。
+3. **规则引擎** — `RuleService` 会按规则作用域执行逐语句 `SqlChecker` 和脚本级 `SqlScriptChecker`。
 4. **报告生成** — 返回 `ScanReport`，包含分类的 `Violation` 记录。
 
 ### 📏 内置规则（OpenGauss 规范）
 
-| 章节 | 规则 | 等级 | 描述 |
-|---|---|---|---|
-| 3.2.2 | `SCHEMA_PREFIX` | 🟡 | 建议使用 Schema 前缀 |
-| 3.3.1 | `NULL_COMPARISON` | 🔴 | 禁止用 `=` 或 `!=` 判断 NULL |
-| 3.3.3 | `WHERE_FUNCTION` | 🟡 | WHERE 条件字段禁用函数 |
-| 3.3.4 | `NOT_EQUAL_OPS` | 🟡 | 少用负向操作符 |
-| 3.3.5 | `LIKE_PERCENT` | 🟡 | LIKE 禁止前缀 `%` |
-| 3.3.6 | `IN_SUBQUERY_SIZE` | 🟡 | IN 子集不宜过大 |
-| 3.4.1 | `NO_SELECT_STAR` | 🔴 | 禁止 SELECT * |
-| 3.4.3 | `LOCK_TABLE` | 🔴 | 禁止 LOCK TABLE |
-| 3.4.4 | `UNION_ALL` | 🟡 | 优先使用 UNION ALL |
-| 3.4.5 | `COUNT_USAGE` | 🟡 | 慎用 count() |
-| 3.4.6 | `SELECT_PAGINATION` | 🟡 | SELECT 建议分页 |
-| 3.6.1 | `UPDATE_LIMIT` | 🔴 | UPDATE 禁用 LIMIT |
-| 3.6.3 | `UPDATE_WHERE` | 🔴 | UPDATE 必须有 WHERE |
-| 3.7.2 | `TRUNCATE` | 🔴 | 全表删除用 TRUNCATE |
-| 3.7.3 | `DELETE_WHERE` | 🔴 | DELETE 必须有 WHERE |
-| 3.8.1 | `JOIN_TABLE_LIMIT` | 🔴 | 限制关联表数量 |
-| 3.8.3 | `IMPLICIT_JOIN` | 🔴 | 禁止隐式 JOIN |
-| 3.9.3 | `SUBQUERY_IN_TARGET` | 🔴 | 目标列禁用子查询 |
-| 3.9.4 | `SUBQUERY_DEPTH` | 🔴 | 子查询嵌套不超过 2 层 |
-| MyBatis | `SQL_INJECTION` | 🔴 | MyBatis SQL 注入风险 |
+| 作用域 | 数量 | 覆盖范围 |
+|---|---:|---|
+| 共享规则 | 21 | Schema 前缀、WHERE、SELECT、UPDATE、DELETE、JOIN、子查询、MyBatis 注入、关键字大写 |
+| SQL 脚本专用 | 20 | 对象命名、数据库字符集/Locale、主键/字段注释要求、外键/触发器/函数/存储过程禁用、索引列数、`ustore` / 列存规则 |
+
+精确规则清单见：
+
+- `skills/sql-audit-scan/references/default-rules.md`
+- `backend/src/main/java/com/sqlaudit/service/RuleService.java`
 
 ### ❓ 常见问题
 

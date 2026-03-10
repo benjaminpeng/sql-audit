@@ -22,7 +22,7 @@ public class SqlScriptParser {
     private static final Logger log = LoggerFactory.getLogger(SqlScriptParser.class);
 
     private static final Pattern STATEMENT_TYPE_PATTERN = Pattern.compile(
-            "^\\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|MERGE|REPLACE|WITH)\\b",
+            "^\\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|MERGE|REPLACE|WITH|COMMENT)\\b",
             Pattern.CASE_INSENSITIVE);
 
     /**
@@ -71,6 +71,8 @@ public class SqlScriptParser {
         boolean inBlockComment = false;
         boolean inSingleQuote = false;
         boolean inDoubleQuote = false;
+        boolean inDollarQuote = false;
+        String dollarTag = null;
 
         for (int i = 0; i < content.length(); i++) {
             char c = content.charAt(i);
@@ -118,6 +120,31 @@ public class SqlScriptParser {
                 inDoubleQuote = !inDoubleQuote;
             }
 
+            if (!inSingleQuote && !inDoubleQuote) {
+                String matchedDollarTag = matchDollarTag(content, i);
+                if (matchedDollarTag != null) {
+                    if (!inDollarQuote) {
+                        inDollarQuote = true;
+                        dollarTag = matchedDollarTag;
+                        sb.append(matchedDollarTag);
+                        i += matchedDollarTag.length() - 1;
+                        continue;
+                    }
+                    if (matchedDollarTag.equals(dollarTag)) {
+                        inDollarQuote = false;
+                        dollarTag = null;
+                        sb.append(matchedDollarTag);
+                        i += matchedDollarTag.length() - 1;
+                        continue;
+                    }
+                }
+            }
+
+            if (inDollarQuote) {
+                sb.append(c);
+                continue;
+            }
+
             // Statement delimiter
             if (!inSingleQuote && !inDoubleQuote && c == ';') {
                 var stmt = sb.toString().trim();
@@ -144,6 +171,25 @@ public class SqlScriptParser {
         }
 
         return result;
+    }
+
+    private String matchDollarTag(String content, int start) {
+        if (content.charAt(start) != '$') {
+            return null;
+        }
+        int end = content.indexOf('$', start + 1);
+        if (end < 0) {
+            return null;
+        }
+        String tag = content.substring(start, end + 1);
+        if (tag.length() == 2) {
+            return "$$";
+        }
+        String inner = tag.substring(1, tag.length() - 1);
+        if (inner.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return tag;
+        }
+        return null;
     }
 
     /**

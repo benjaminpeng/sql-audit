@@ -593,6 +593,16 @@ body::after {
     font-family: var(--font-mono);
 }
 
+.rule-chip .scope-badge {
+    padding: 1px 6px;
+    border-radius: var(--r-full);
+    background: rgba(86, 190, 255, 0.12);
+    border: 1px solid rgba(86, 190, 255, 0.24);
+    color: var(--cyan);
+    font-size: 0.62rem;
+    letter-spacing: 0.02em;
+}
+
 /* Category groups for rules */
 .rules-category-group {
     margin-bottom: var(--s-md);
